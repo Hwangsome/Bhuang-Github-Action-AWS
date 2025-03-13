@@ -89,22 +89,26 @@ jobs:
               --type SPARK \
               --initial-capacity '{
                 "DRIVER": {
-                  "count": ${{ env.INITIAL_CAPACITY_COUNT }},
-                  "diskGB": ${{ env.INITIAL_CAPACITY_DISK_GB }},
-                  "memoryGB": ${{ env.INITIAL_CAPACITY_MEMORY_GB }},
-                  "vCPU": ${{ env.INITIAL_CAPACITY_VCPU }}
+                  "workerCount": ${{ env.INITIAL_CAPACITY_COUNT }},
+                  "workerConfiguration": {
+                    "cpu": "${{ env.INITIAL_CAPACITY_VCPU }} vCPU",
+                    "memory": "${{ env.INITIAL_CAPACITY_MEMORY_GB }} GB",
+                    "disk": "${{ env.INITIAL_CAPACITY_DISK_GB }} GB"
+                  }
                 },
                 "EXECUTOR": {
-                  "count": ${{ env.INITIAL_CAPACITY_COUNT }},
-                  "diskGB": ${{ env.INITIAL_CAPACITY_DISK_GB }},
-                  "memoryGB": ${{ env.INITIAL_CAPACITY_MEMORY_GB }},
-                  "vCPU": ${{ env.INITIAL_CAPACITY_VCPU }}
+                  "workerCount": ${{ env.INITIAL_CAPACITY_COUNT }},
+                  "workerConfiguration": {
+                    "cpu": "${{ env.INITIAL_CAPACITY_VCPU }} vCPU",
+                    "memory": "${{ env.INITIAL_CAPACITY_MEMORY_GB }} GB",
+                    "disk": "${{ env.INITIAL_CAPACITY_DISK_GB }} GB"
+                  }
                 }
               }' \
               --maximum-capacity '{
-                "diskGB": ${{ env.MAX_CAPACITY_DISK_GB }},
-                "memoryGB": ${{ env.MAX_CAPACITY_MEMORY_GB }},
-                "vCPU": ${{ env.MAX_CAPACITY_VCPU }}
+                "cpu": "${{ env.MAX_CAPACITY_VCPU }} vCPU",
+                "memory": "${{ env.MAX_CAPACITY_MEMORY_GB }} GB",
+                "disk": "${{ env.MAX_CAPACITY_DISK_GB }} GB"
               }' \
               --query "applicationId" --output text)
               
