@@ -8,9 +8,9 @@ on:
         required: true
         default: 'main'
       working_directory:
-        description: 'Directory containing Terraform configuration'
+        description: 'Terraform directory path (e.g., terraform/ec2)'
         required: true
-        default: '.'
+        type: string
 
 permissions:
   contents: read
@@ -30,6 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
+          fetch-depth: 0
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -41,6 +42,17 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.0"
+
+      - name: Check Directory Exists
+        run: |
+          if [ ! -d "${{ github.event.inputs.working_directory }}" ]; then
+            echo "Error: Directory '${{ github.event.inputs.working_directory }}' does not exist"
+            exit 1
+          fi
+          if [ ! -f "${{ github.event.inputs.working_directory }}/main.tf" ] && [ ! -f "${{ github.event.inputs.working_directory }}/terraform.tf" ]; then
+            echo "Error: No Terraform configuration files found in '${{ github.event.inputs.working_directory }}'"
+            exit 1
+          fi
 
       - name: Terraform Format
         id: fmt
