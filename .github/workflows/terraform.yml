@@ -1,4 +1,4 @@
-name: 'Terraform Plan Workflow'
+name: 'Terraform PR Plan'
 
 on:
   pull_request:
@@ -8,12 +8,6 @@ on:
       - '**/*.tf'
       - '**/*.tfvars'
       - '.github/workflows/terraform.yml'
-  workflow_dispatch:
-    inputs:
-      working_directory:
-        description: 'Directory containing Terraform configuration'
-        required: false
-        default: '.'
 
 permissions:
   contents: read
@@ -29,7 +23,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       terraform_dirs: ${{ steps.changed-dirs.outputs.terraform_dirs }}
-    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -53,11 +46,11 @@ jobs:
   terraform_plan:
     name: 'Terraform Plan'
     needs: [detect_changes]
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && fromJson(needs.detect_changes.outputs.terraform_dirs)[0] != null) }}
+    if: ${{ fromJson(needs.detect_changes.outputs.terraform_dirs)[0] != null }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        terraform_dir: ${{ github.event_name == 'workflow_dispatch' && fromJson(format('["%s"]', github.event.inputs.working_directory || '.')) || fromJson(needs.detect_changes.outputs.terraform_dirs) }}
+        terraform_dir: ${{ fromJson(needs.detect_changes.outputs.terraform_dirs) }}
       fail-fast: false
 
     steps:
@@ -104,7 +97,6 @@ jobs:
 
       - name: Generate Plan HTML
         id: plan-html
-        if: github.event_name == 'pull_request'
         run: |
           echo 'PLAN_HTML<<EOF' >> $GITHUB_OUTPUT
           echo '<h4>Directory: ${{ matrix.terraform_dir }}</h4>' >> $GITHUB_OUTPUT
@@ -121,7 +113,6 @@ jobs:
 
       - name: Update Pull Request
         uses: actions/github-script@v7
-        if: github.event_name == 'pull_request'
         env:
           DIR: ${{ matrix.terraform_dir }}
           PLAN: "${{ steps.plan.outputs.PLAN }}"
