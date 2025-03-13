@@ -2,8 +2,6 @@ name: 'Terraform PR Plan'
 
 on:
   pull_request:
-    branches:
-      - main
     paths:
       - '**/*.tf'
       - '**/*.tfvars'
@@ -62,6 +60,8 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+          retry-max-attempts: 3
+          timeout-seconds: 30
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
