@@ -1,0 +1,291 @@
+name: 'EMR Serverless Spark Workflow'
+
+on:
+  workflow_dispatch:
+    inputs:
+      application_name:
+        description: 'EMR Serverless Application Name'
+        required: true
+        default: 'spark-app'
+      spark_script:
+        description: 'Path to Spark script in S3'
+        required: true
+        default: 's3://your-bucket/scripts/spark-job.py'
+      job_name:
+        description: 'Spark job name'
+        required: true
+        default: 'spark-job'
+      spark_submit_parameters:
+        description: 'Additional Spark submit parameters'
+        required: false
+        default: '--conf spark.executor.cores=4 --conf spark.executor.memory=8g'
+      s3_logs_bucket:
+        description: 'S3 bucket for logs'
+        required: true
+        default: 's3://your-bucket/logs/'
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - create-application
+          - start-job
+          - both
+        default: 'both'
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: 'us-west-2'
+  EMR_RELEASE_LABEL: 'emr-6.9.0'
+  INITIAL_CAPACITY_TYPE: 'DRIVER'
+  INITIAL_CAPACITY_COUNT: 1
+  INITIAL_CAPACITY_DISK_GB: 20
+  INITIAL_CAPACITY_MEMORY_GB: 4
+  INITIAL_CAPACITY_VCPU: 2
+  MAX_CAPACITY_DISK_GB: 1000
+  MAX_CAPACITY_MEMORY_GB: 120
+  MAX_CAPACITY_VCPU: 30
+
+jobs:
+  emr_serverless:
+    name: 'EMR Serverless Spark Job'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install AWS CLI
+        run: |
+          pip install awscli boto3
+
+      - name: Create EMR Serverless Application
+        id: create_app
+        if: ${{ github.event.inputs.action == 'create-application' || github.event.inputs.action == 'both' }}
+        run: |
+          # Check if application already exists
+          APP_ID=$(aws emr-serverless list-applications --query "applications[?name=='${{ github.event.inputs.application_name }}'].id" --output text)
+          
+          if [ -z "$APP_ID" ]; then
+            echo "Creating new EMR Serverless application: ${{ github.event.inputs.application_name }}"
+            
+            APP_ID=$(aws emr-serverless create-application \
+              --name "${{ github.event.inputs.application_name }}" \
+              --release-label ${{ env.EMR_RELEASE_LABEL }} \
+              --type SPARK \
+              --initial-capacity '{
+                "DRIVER": {
+                  "count": ${{ env.INITIAL_CAPACITY_COUNT }},
+                  "diskGB": ${{ env.INITIAL_CAPACITY_DISK_GB }},
+                  "memoryGB": ${{ env.INITIAL_CAPACITY_MEMORY_GB }},
+                  "vCPU": ${{ env.INITIAL_CAPACITY_VCPU }}
+                },
+                "EXECUTOR": {
+                  "count": ${{ env.INITIAL_CAPACITY_COUNT }},
+                  "diskGB": ${{ env.INITIAL_CAPACITY_DISK_GB }},
+                  "memoryGB": ${{ env.INITIAL_CAPACITY_MEMORY_GB }},
+                  "vCPU": ${{ env.INITIAL_CAPACITY_VCPU }}
+                }
+              }' \
+              --maximum-capacity '{
+                "diskGB": ${{ env.MAX_CAPACITY_DISK_GB }},
+                "memoryGB": ${{ env.MAX_CAPACITY_MEMORY_GB }},
+                "vCPU": ${{ env.MAX_CAPACITY_VCPU }}
+              }' \
+              --query "applicationId" --output text)
+              
+            echo "Waiting for application to be created..."
+            aws emr-serverless get-application --application-id $APP_ID
+            
+            # Wait for application to be CREATED
+            while true; do
+              STATUS=$(aws emr-serverless get-application --application-id $APP_ID --query "application.state" --output text)
+              echo "Application status: $STATUS"
+              if [ "$STATUS" = "CREATED" ]; then
+                break
+              fi
+              sleep 10
+            done
+            
+            # Start the application
+            aws emr-serverless start-application --application-id $APP_ID
+            
+            # Wait for application to be STARTED
+            while true; do
+              STATUS=$(aws emr-serverless get-application --application-id $APP_ID --query "application.state" --output text)
+              echo "Application status: $STATUS"
+              if [ "$STATUS" = "STARTED" ]; then
+                break
+              fi
+              sleep 10
+            done
+          else
+            echo "Application already exists with ID: $APP_ID"
+            
+            # Check if application is in STOPPED state and start it if needed
+            STATUS=$(aws emr-serverless get-application --application-id $APP_ID --query "application.state" --output text)
+            if [ "$STATUS" = "STOPPED" ]; then
+              echo "Starting application..."
+              aws emr-serverless start-application --application-id $APP_ID
+              
+              # Wait for application to be STARTED
+              while true; do
+                STATUS=$(aws emr-serverless get-application --application-id $APP_ID --query "application.state" --output text)
+                echo "Application status: $STATUS"
+                if [ "$STATUS" = "STARTED" ]; then
+                  break
+                fi
+                sleep 10
+              done
+            fi
+          fi
+          
+          echo "app_id=$APP_ID" >> $GITHUB_OUTPUT
+          echo "Application ID: $APP_ID is ready"
+
+      - name: Get Application ID
+        id: get_app
+        if: ${{ github.event.inputs.action == 'start-job' && steps.create_app.outcome != 'success' }}
+        run: |
+          APP_ID=$(aws emr-serverless list-applications --query "applications[?name=='${{ github.event.inputs.application_name }}'].id" --output text)
+          
+          if [ -z "$APP_ID" ]; then
+            echo "Application ${{ github.event.inputs.application_name }} does not exist"
+            exit 1
+          fi
+          
+          # Check if application is in STOPPED state and start it if needed
+          STATUS=$(aws emr-serverless get-application --application-id $APP_ID --query "application.state" --output text)
+          if [ "$STATUS" = "STOPPED" ]; then
+            echo "Starting application..."
+            aws emr-serverless start-application --application-id $APP_ID
+            
+            # Wait for application to be STARTED
+            while true; do
+              STATUS=$(aws emr-serverless get-application --application-id $APP_ID --query "application.state" --output text)
+              echo "Application status: $STATUS"
+              if [ "$STATUS" = "STARTED" ]; then
+                break
+              fi
+              sleep 10
+            done
+          fi
+          
+          echo "app_id=$APP_ID" >> $GITHUB_OUTPUT
+          echo "Application ID: $APP_ID is ready"
+
+      - name: Start Spark Job
+        id: start_job
+        if: ${{ github.event.inputs.action == 'start-job' || github.event.inputs.action == 'both' }}
+        run: |
+          # Use the application ID from the previous step
+          APP_ID="${{ steps.create_app.outputs.app_id || steps.get_app.outputs.app_id }}"
+          
+          # Generate a unique job name with timestamp
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          JOB_NAME="${{ github.event.inputs.job_name }}-${TIMESTAMP}"
+          
+          echo "Starting Spark job: $JOB_NAME on application: $APP_ID"
+          
+          JOB_RUN_ID=$(aws emr-serverless start-job-run \
+            --application-id $APP_ID \
+            --execution-role-arn ${{ secrets.EMR_EXECUTION_ROLE_ARN }} \
+            --name "$JOB_NAME" \
+            --job-driver '{
+              "sparkSubmit": {
+                "entryPoint": "${{ github.event.inputs.spark_script }}",
+                "entryPointArguments": [],
+                "sparkSubmitParameters": "${{ github.event.inputs.spark_submit_parameters }}"
+              }
+            }' \
+            --configuration-overrides '{
+              "monitoringConfiguration": {
+                "s3MonitoringConfiguration": {
+                  "logUri": "${{ github.event.inputs.s3_logs_bucket }}"
+                }
+              }
+            }' \
+            --query "jobRunId" --output text)
+          
+          echo "job_run_id=$JOB_RUN_ID" >> $GITHUB_OUTPUT
+          echo "Job Run ID: $JOB_RUN_ID"
+          
+          # Wait for job to complete
+          echo "Waiting for job to complete..."
+          while true; do
+            STATUS=$(aws emr-serverless get-job-run --application-id $APP_ID --job-run-id $JOB_RUN_ID --query "jobRun.state" --output text)
+            echo "Job status: $STATUS"
+            if [ "$STATUS" = "SUCCESS" ] || [ "$STATUS" = "FAILED" ] || [ "$STATUS" = "CANCELLED" ]; then
+              break
+            fi
+            sleep 30
+          done
+          
+          # Get job details
+          JOB_DETAILS=$(aws emr-serverless get-job-run --application-id $APP_ID --job-run-id $JOB_RUN_ID)
+          echo "Job details: $JOB_DETAILS"
+          
+          # Check if job was successful
+          if [ "$STATUS" != "SUCCESS" ]; then
+            echo "Job failed with status: $STATUS"
+            exit 1
+          fi
+
+      - name: Generate Summary
+        id: summary
+        run: |
+          echo "### EMR Serverless Spark Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "**Application Name:** ${{ github.event.inputs.application_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** ${{ github.event.inputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ github.event.inputs.action }}" == "create-application" ] || [ "${{ github.event.inputs.action }}" == "both" ]; then
+            echo "#### Application Details" >> $GITHUB_STEP_SUMMARY
+            echo "* Application ID: ${{ steps.create_app.outputs.app_id || steps.get_app.outputs.app_id }}" >> $GITHUB_STEP_SUMMARY
+            echo "* Release Label: ${{ env.EMR_RELEASE_LABEL }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ github.event.inputs.action }}" == "start-job" ] || [ "${{ github.event.inputs.action }}" == "both" ]; then
+            echo "#### Job Details" >> $GITHUB_STEP_SUMMARY
+            echo "* Job Run ID: ${{ steps.start_job.outputs.job_run_id }}" >> $GITHUB_STEP_SUMMARY
+            echo "* Spark Script: ${{ github.event.inputs.spark_script }}" >> $GITHUB_STEP_SUMMARY
+            echo "* Logs Location: ${{ github.event.inputs.s3_logs_bucket }}" >> $GITHUB_STEP_SUMMARY
+            
+            # Get job status
+            APP_ID="${{ steps.create_app.outputs.app_id || steps.get_app.outputs.app_id }}"
+            JOB_RUN_ID="${{ steps.start_job.outputs.job_run_id }}"
+            
+            if [ -n "$APP_ID" ] && [ -n "$JOB_RUN_ID" ]; then
+              JOB_STATUS=$(aws emr-serverless get-job-run --application-id $APP_ID --job-run-id $JOB_RUN_ID --query "jobRun.state" --output text)
+              echo "* Job Status: $JOB_STATUS" >> $GITHUB_STEP_SUMMARY
+              
+              # Get job statistics
+              JOB_STATS=$(aws emr-serverless get-job-run --application-id $APP_ID --job-run-id $JOB_RUN_ID)
+              START_TIME=$(echo $JOB_STATS | jq -r '.jobRun.createdAt')
+              END_TIME=$(echo $JOB_STATS | jq -r '.jobRun.updatedAt')
+              
+              echo "* Start Time: $START_TIME" >> $GITHUB_STEP_SUMMARY
+              echo "* End Time: $END_TIME" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+      - name: Check for Failures
+        if: |
+          (github.event.inputs.action == 'create-application' && steps.create_app.outcome == 'failure') || 
+          (github.event.inputs.action == 'start-job' && steps.start_job.outcome == 'failure') ||
+          (github.event.inputs.action == 'both' && (steps.create_app.outcome == 'failure' || steps.start_job.outcome == 'failure'))
+        run: exit 1
