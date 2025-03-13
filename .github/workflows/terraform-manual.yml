@@ -1,0 +1,99 @@
+name: 'Terraform Manual Workflow'
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to checkout'
+        required: true
+        default: 'main'
+      working_directory:
+        description: 'Directory containing Terraform configuration'
+        required: true
+        default: '.'
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+env:
+  AWS_REGION: 'us-west-2'
+
+jobs:
+  terraform_manual:
+    name: 'Terraform Manual Plan'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+
+      - name: Terraform Format
+        id: fmt
+        run: terraform fmt -check
+        working-directory: ${{ github.event.inputs.working_directory }}
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+        working-directory: ${{ github.event.inputs.working_directory }}
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+        working-directory: ${{ github.event.inputs.working_directory }}
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -no-color -out=tfplan
+          terraform show -json tfplan > plan.json
+          echo 'PLAN<<EOF' >> $GITHUB_OUTPUT
+          terraform show -no-color tfplan >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+        working-directory: ${{ github.event.inputs.working_directory }}
+        continue-on-error: true
+
+      - name: Generate Plan Summary
+        id: plan-summary
+        run: |
+          echo "### Terraform Plan Results for Directory: ${{ github.event.inputs.working_directory }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.event.inputs.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Status" >> $GITHUB_STEP_SUMMARY
+          echo "* Format and Style 🖌 \`${{ steps.fmt.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "* Initialization ⚙️ \`${{ steps.init.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "* Validation 🤖 \`${{ steps.validate.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "* Plan 📖 \`${{ steps.plan.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f plan.json ]; then
+            echo "#### Resource Changes" >> $GITHUB_STEP_SUMMARY
+            echo "<details><summary>Show Changes</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Resource | Action | Type |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|--------|------|" >> $GITHUB_STEP_SUMMARY
+            jq -r '.resource_changes[]? | "| " + .address + " | " + (.change.actions | join(", ")) + " | " + .type + " |"' plan.json >> $GITHUB_STEP_SUMMARY || echo "| No changes | - | - |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
+        working-directory: ${{ github.event.inputs.working_directory }}
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
