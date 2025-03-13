@@ -46,7 +46,7 @@ permissions:
   id-token: write
 
 env:
-  AWS_REGION: '${{ github.event.inputs.aws_region || "us-east-1" }}'
+  AWS_REGION: '${{ github.event.inputs.aws_region }}'
   EMR_RELEASE_LABEL: 'emr-6.9.0'
   # EMR Serverless需要一个执行角色ARN来运行Spark作业
   # 不要在这里设置默认值，而是通过GitHub Secrets或运行时参数提供
