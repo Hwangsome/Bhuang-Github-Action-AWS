@@ -238,7 +238,9 @@ jobs:
             --job-driver '{
               "sparkSubmit": {
                 "entryPoint": "${{ github.event.inputs.spark_script }}",
-                "entryPointArguments": [],
+                "entryPointArguments": [
+                  "--output-path", "s3://sprak-job/output/results/"
+                ],
                 "sparkSubmitParameters": "${{ github.event.inputs.spark_submit_parameters }}"
               }
             }' \
