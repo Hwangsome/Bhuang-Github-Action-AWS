@@ -31,6 +31,16 @@ jobs:
           ref: ${{ github.event.inputs.branch }}
           fetch-depth: 0
 
+      - name: Debug Info
+        run: |
+          echo "GitHub Repository: ${{ github.repository }}"
+          echo "GitHub Ref: ${{ github.ref }}"
+          echo "GitHub Event Name: ${{ github.event_name }}"
+          echo "GitHub Actor: ${{ github.actor }}"
+          echo "GitHub SHA: ${{ github.sha }}"
+          echo "Role ARN: ${{ secrets.AWS_ROLE_ARN }}"
+          echo "AWS Region: ${{ env.AWS_REGION }}"
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -38,6 +48,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
           role-session-name: GitHubActions-${{ github.run_id }}
+          role-duration-seconds: 900
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
