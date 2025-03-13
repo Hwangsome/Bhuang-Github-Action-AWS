@@ -3,21 +3,26 @@ name: 'Terraform Manual Workflow'
 on:
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'Branch to checkout'
-        required: true
-        default: 'main'
       working_directory:
-        description: 'Terraform directory path (e.g., terraform/ec2)'
+        description: 'Directory containing Terraform configuration'
         required: true
-        type: string
+        default: './terraform/ec2'
+      action:
+        description: 'Terraform action to perform'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+        default: 'plan'
 
 permissions:
-  id-token: write
   contents: read
+  pull-requests: write
+  id-token: write
 
 env:
-  AWS_REGION: 'us-east-1'
+  AWS_REGION: 'us-west-2'
 
 jobs:
   terraform_manual:
@@ -27,55 +32,17 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.branch }}
-          fetch-depth: 0
-
-      - name: Debug Info
-        run: |
-          echo "=== GitHub Context ==="
-          echo "Repository: ${{ github.repository }}"
-          echo "Ref: ${{ github.ref }}"
-          echo "Event Name: ${{ github.event_name }}"
-          echo "Actor: ${{ github.actor }}"
-          echo "SHA: ${{ github.sha }}"
-          echo "Workflow: ${{ github.workflow }}"
-          echo "Run ID: ${{ github.run_id }}"
-          echo "Run Number: ${{ github.run_number }}"
-          
-          echo "=== AWS Configuration ==="
-          echo "Role ARN: ${{ secrets.AWS_ROLE_ARN }}"
-          echo "AWS Region: ${{ env.AWS_REGION }}"
-          
-          echo "=== Environment ==="
-          echo "Runner OS: ${{ runner.os }}"
-          echo "Runner Name: ${{ runner.name }}"
-          echo "Workspace: ${{ github.workspace }}"
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          audience: sts.amazonaws.com
-          role-session-name: GitHubActions-${{ github.run_id }}
-          role-duration-seconds: 900
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.0"
-
-      - name: Check Directory Exists
-        run: |
-          if [ ! -d "${{ github.event.inputs.working_directory }}" ]; then
-            echo "Error: Directory '${{ github.event.inputs.working_directory }}' does not exist"
-            exit 1
-          fi
-          if [ ! -f "${{ github.event.inputs.working_directory }}/main.tf" ] && [ ! -f "${{ github.event.inputs.working_directory }}/terraform.tf" ]; then
-            echo "Error: No Terraform configuration files found in '${{ github.event.inputs.working_directory }}'"
-            exit 1
-          fi
 
       - name: Terraform Format
         id: fmt
@@ -95,6 +62,7 @@ jobs:
 
       - name: Terraform Plan
         id: plan
+        if: github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
         run: |
           terraform plan -no-color -out=tfplan
           terraform show -json tfplan > plan.json
@@ -102,19 +70,32 @@ jobs:
           terraform show -no-color tfplan >> $GITHUB_OUTPUT
           echo 'EOF' >> $GITHUB_OUTPUT
         working-directory: ${{ github.event.inputs.working_directory }}
-        continue-on-error: true
 
-      - name: Generate Plan Summary
-        id: plan-summary
+      - name: Terraform Apply
+        id: apply
+        if: github.event.inputs.action == 'apply'
+        run: terraform apply -auto-approve tfplan
+        working-directory: ${{ github.event.inputs.working_directory }}
+
+      - name: Generate Summary
+        id: summary
         run: |
-          echo "### Terraform Plan Results for Directory: ${{ github.event.inputs.working_directory }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ github.event.inputs.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Terraform Results for Directory: ${{ github.event.inputs.working_directory }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** ${{ github.event.inputs.action }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "#### Status" >> $GITHUB_STEP_SUMMARY
           echo "* Format and Style 🖌 \`${{ steps.fmt.outcome }}\`" >> $GITHUB_STEP_SUMMARY
           echo "* Initialization ⚙️ \`${{ steps.init.outcome }}\`" >> $GITHUB_STEP_SUMMARY
           echo "* Validation 🤖 \`${{ steps.validate.outcome }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "* Plan 📖 \`${{ steps.plan.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ github.event.inputs.action }}" == "plan" ] || [ "${{ github.event.inputs.action }}" == "apply" ]; then
+            echo "* Plan 📖 \`${{ steps.plan.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ github.event.inputs.action }}" == "apply" ]; then
+            echo "* Apply 🚀 \`${{ steps.apply.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
           echo "" >> $GITHUB_STEP_SUMMARY
           
           if [ -f plan.json ]; then
@@ -129,6 +110,10 @@ jobs:
           fi
         working-directory: ${{ github.event.inputs.working_directory }}
 
-      - name: Terraform Plan Status
-        if: steps.plan.outcome == 'failure'
+      - name: Check for Failures
+        if: |
+          steps.init.outcome == 'failure' || 
+          steps.validate.outcome == 'failure' || 
+          (github.event.inputs.action == 'plan' && steps.plan.outcome == 'failure') || 
+          (github.event.inputs.action == 'apply' && steps.apply.outcome == 'failure')
         run: exit 1
