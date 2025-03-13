@@ -23,6 +23,10 @@ on:
         description: 'S3 bucket for logs'
         required: true
         default: 's3://your-bucket/logs/'
+      execution_role_arn:
+        description: 'IAM Role ARN for EMR Serverless job execution'
+        required: false
+        default: ''
       action:
         description: 'Action to perform'
         required: true
@@ -207,18 +211,25 @@ jobs:
           
           echo "Starting Spark job: $JOB_NAME on application: $APP_ID"
           
-          # 检查是否已设置执行角色ARN
-          if [ -z "${{ secrets.EMR_EXECUTION_ROLE_ARN }}" ]; then
-            echo "错误: 未提供EMR执行角色ARN。请在GitHub仓库设置中添加EMR_EXECUTION_ROLE_ARN密钥。"
-            echo "执行角色是EMR Serverless用来访问S3和其他AWS服务的IAM角色。"
-            exit 1
+          # 确定使用哪个执行角色ARN（优先使用输入参数，其次是密钥）
+          ROLE_ARN="${{ github.event.inputs.execution_role_arn }}"
+          
+          # 如果输入参数为空，则尝试使用密钥
+          if [ -z "$ROLE_ARN" ]; then
+            ROLE_ARN="${{ secrets.EMR_EXECUTION_ROLE_ARN }}"
+            # 如果密钥也为空，则显示错误
+            if [ -z "$ROLE_ARN" ]; then
+              echo "错误: 未提供EMR执行角色ARN。请通过workflow_dispatch输入参数或在GitHub仓库设置中添加EMR_EXECUTION_ROLE_ARN密钥。"
+              echo "执行角色是EMR Serverless用来访问S3和其他AWS服务的IAM角色。"
+              exit 1
+            fi
           fi
           
-          echo "使用执行角色: ${{ secrets.EMR_EXECUTION_ROLE_ARN }}"
+          echo "使用执行角色: $ROLE_ARN"
           
           JOB_RUN_ID=$(aws emr-serverless start-job-run \
             --application-id $APP_ID \
-            --execution-role-arn "$EXEC_ROLE_ARN" \
+            --execution-role-arn "$ROLE_ARN" \
             --name "$JOB_NAME" \
             --job-driver '{
               "sparkSubmit": {
