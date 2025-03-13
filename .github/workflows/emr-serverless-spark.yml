@@ -40,9 +40,8 @@ permissions:
 env:
   AWS_REGION: 'us-west-2'
   EMR_RELEASE_LABEL: 'emr-6.9.0'
-  # 这里需要设置默认的执行角色ARN，例如arn:aws:iam::123456789012:role/EMRServerlessS3RuntimeRole
-  # 此角色需要在AWS中已创建，并有权限访问S3和CloudWatch Logs
-  EMR_EXECUTION_ROLE_ARN: '${EMR_EXECUTION_ROLE_ARN}'
+  # EMR Serverless需要一个执行角色ARN来运行Spark作业
+  # 不要在这里设置默认值，而是通过GitHub Secrets或运行时参数提供
   INITIAL_CAPACITY_TYPE: 'DRIVER'
   INITIAL_CAPACITY_COUNT: 1
   INITIAL_CAPACITY_DISK_GB: 20
@@ -208,17 +207,14 @@ jobs:
           
           echo "Starting Spark job: $JOB_NAME on application: $APP_ID"
           
-          # 执行角色可以通过环境变量设置（推荐），或者通过GitHub Secrets设置
-          # 如果环境变量EMR_EXECUTION_ROLE_ARN未设置，请确保在GitHub仓库中设置了EMR_EXECUTION_ROLE_ARN密钥
-          EXEC_ROLE_ARN="${EMR_EXECUTION_ROLE_ARN:-${{ secrets.EMR_EXECUTION_ROLE_ARN }}}"
-          
-          if [ -z "$EXEC_ROLE_ARN" ]; then
-            echo "错误: 未提供EMR执行角色ARN。请设置EMR_EXECUTION_ROLE_ARN环境变量或GitHub密钥。"
+          # 检查是否已设置执行角色ARN
+          if [ -z "${{ secrets.EMR_EXECUTION_ROLE_ARN }}" ]; then
+            echo "错误: 未提供EMR执行角色ARN。请在GitHub仓库设置中添加EMR_EXECUTION_ROLE_ARN密钥。"
             echo "执行角色是EMR Serverless用来访问S3和其他AWS服务的IAM角色。"
             exit 1
           fi
           
-          echo "使用执行角色: $EXEC_ROLE_ARN"
+          echo "使用执行角色: ${{ secrets.EMR_EXECUTION_ROLE_ARN }}"
           
           JOB_RUN_ID=$(aws emr-serverless start-job-run \
             --application-id $APP_ID \
