@@ -161,40 +161,33 @@ jobs:
           
           echo "Updated terraform-manual.yml with new Terraform directory options"
           
-          # 使用个人访问令牌(PAT)更新工作流文件
-          # 注意: 这需要在GitHub仓库中设置一个名为 PAT_GITHUB 的密钥
-          if [ -z "$PAT_GITHUB" ]; then
-            echo "❗ 错误: 没有找到PAT_GITHUB密钥。请在仓库设置中添加该密钥。"
-            
-            # 在密钥不存在的情况下，将内容输出也保存下来
-            echo ""
-            echo "====================== 手动更新需要 ======================" 
-            echo "文件: .github/workflows/terraform-manual.yml"
-            echo "请将文件中的 target_directory 部分替换为以下内容:"
-            echo "---"
-            echo -e "$NEW_INPUT"
-            echo "---"
-            echo "=================================================================="
-            
-            echo -e "$NEW_INPUT" > terraform_options_update.txt
-            echo "✅ 已将更新内容保存到 terraform_options_update.txt 文件中供您手动更新"
-            exit 1
-          fi
+          # 采用新策略: 更新一个外部配置文件替代直接更新工作流文件
+          # 创建目录(如果不存在)
+          mkdir -p .github/terraform-options
           
-          # 设置使用PAT的git揘送URL
-          REPO_URL="https://$PAT_GITHUB@github.com/${GITHUB_REPOSITORY}.git"
+          # 将选项写入到YAML配置文件
+          cat > .github/terraform-options/directories.yml << EOL
+# 这个文件由GitHub Actions自动更新
+# 最后更新时间: $(date)
+
+# Terraform目录配置
+target_directory:
+  description: 'Select Terraform directory (auto-updated)'
+  required: true
+  type: choice
+  options:
+${OPTIONS}  default: '${DEFAULT_DIR}'
+EOL
           
-          # 新的git配置
+          # 提交更改到仓库
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
-          
-          # 提交更改
-          git add .github/workflows/terraform-manual.yml
-          git commit -m "[Automated] Update Terraform directory options in workflow"
-          
-          # 使用PAT推送更改（可以绕过GitHub Actions的限制）
-          echo "尝试使用PAT推送更改..."
-          git remote set-url origin "$REPO_URL"
+          git add .github/terraform-options/directories.yml
+          git commit -m "[Automated] Update Terraform directory options"
           git push origin $TARGET_BRANCH
           
-          echo "✅ 成功更新了 $TARGET_BRANCH 分支上的 terraform-manual.yml 文件中的Terraform目录选项"
+          echo "✅ 成功更新了 Terraform 目录选项配置文件"
+          echo "
+接下来需要:"
+          echo "1. 在 terraform-manual.yml 工作流中添加一个步骤来加载这个配置文件"
+          echo "2. 这样在运行时就可以自动使用最新的Terraform目录选项"
