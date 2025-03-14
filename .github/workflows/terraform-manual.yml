@@ -3,11 +3,18 @@ name: 'Terraform Manual Workflow'
 on:
   workflow_dispatch:
     inputs:
-      terraform_directory_index:
-        description: 'Select Terraform directory by index (will be shown in workflow summary)'
+      target_directory:
+        description: 'Select Terraform directory'
         required: true
-        type: number
-        default: 1
+        type: choice
+        options:
+          - terraform/ec2
+          - terraform/s3
+          - terraform/vpc
+          - terraform/lambda
+          - spark/terraform
+          - scripts/terraform
+        default: 'terraform/ec2'
       action:
         description: 'Terraform action to perform'
         required: true
@@ -26,66 +33,24 @@ env:
   AWS_REGION: 'us-west-2'
 
 jobs:
-  scan_terraform_dirs:
-    name: 'Scan Terraform Directories'
+  display_info:
+    name: 'Display Terraform Directory Info'
     runs-on: ubuntu-latest
     outputs:
-      terraform_dir: ${{ steps.select-dir.outputs.selected_dir }}
-      all_dirs: ${{ steps.find-tf-dirs.outputs.all_dirs_json }}
-      all_dirs_formatted: ${{ steps.find-tf-dirs.outputs.all_dirs_formatted }}
+      target_directory: ${{ github.event.inputs.target_directory }}
     
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
       
-      - name: Find Terraform Directories
-        id: find-tf-dirs
+      - name: Display Selected Directory
         run: |
-          # Find all directories containing .tf files
-          DIRS=$(find . -type f -name "*.tf" | xargs -I{} dirname {} 2>/dev/null | sort -u)
-          
-          # Convert to JSON array
-          DIRS_JSON=$(echo "$DIRS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
-          echo "all_dirs_json=$DIRS_JSON" >> $GITHUB_OUTPUT
-          
-          # Create formatted list for display
-          COUNTER=1
-          FORMATTED=""
-          while IFS= read -r dir; do
-            if [ ! -z "$dir" ]; then
-              FORMATTED="$FORMATTED$COUNTER. $dir\n"
-              COUNTER=$((COUNTER+1))
-            fi
-          done <<< "$DIRS"
-          
-          # Save formatted list (handle multiline output with EOF delimiter)
-          echo 'all_dirs_formatted<<EOF' >> $GITHUB_OUTPUT
-          echo -e "$FORMATTED" >> $GITHUB_OUTPUT
-          echo 'EOF' >> $GITHUB_OUTPUT
-          
-          echo "Found Terraform directories:"
-          echo -e "$FORMATTED"
-      
-      - name: Select Directory by Index
-        id: select-dir
-        run: |
-          DIRS_JSON='${{ steps.find-tf-dirs.outputs.all_dirs_json }}'
-          INDEX=${{ github.event.inputs.terraform_directory_index }}
-          
-          # Get the directory at the specified index (adjusting for 0-based array)
-          SELECTED_DIR=$(echo $DIRS_JSON | jq -r ".[$(($INDEX-1))] // empty")
-          
-          if [ -z "$SELECTED_DIR" ]; then
-            echo "Error: Invalid directory index selected."
-            exit 1
-          fi
-          
-          echo "selected_dir=$SELECTED_DIR" >> $GITHUB_OUTPUT
-          echo "Selected directory: $SELECTED_DIR"
+          echo "Selected Terraform directory: ${{ github.event.inputs.target_directory }}"
+          echo "target_directory=${{ github.event.inputs.target_directory }}" >> $GITHUB_OUTPUT
 
   terraform_manual:
     name: 'Terraform Manual Plan'
-    needs: scan_terraform_dirs
+    needs: display_info
     runs-on: ubuntu-latest
 
     steps:
@@ -106,18 +71,18 @@ jobs:
       - name: Terraform Format
         id: fmt
         run: terraform fmt -check
-        working-directory: ${{ needs.scan_terraform_dirs.outputs.terraform_dir }}
+        working-directory: ${{ needs.display_info.outputs.target_directory }}
         continue-on-error: true
 
       - name: Terraform Init
         id: init
         run: terraform init
-        working-directory: ${{ needs.scan_terraform_dirs.outputs.terraform_dir }}
+        working-directory: ${{ needs.display_info.outputs.target_directory }}
 
       - name: Terraform Validate
         id: validate
         run: terraform validate
-        working-directory: ${{ needs.scan_terraform_dirs.outputs.terraform_dir }}
+        working-directory: ${{ needs.display_info.outputs.target_directory }}
 
       - name: Terraform Plan
         id: plan
@@ -128,24 +93,18 @@ jobs:
           echo 'PLAN<<EOF' >> $GITHUB_OUTPUT
           terraform show -no-color tfplan >> $GITHUB_OUTPUT
           echo 'EOF' >> $GITHUB_OUTPUT
-        working-directory: ${{ needs.scan_terraform_dirs.outputs.terraform_dir }}
+        working-directory: ${{ needs.display_info.outputs.target_directory }}
 
       - name: Terraform Apply
         id: apply
         if: github.event.inputs.action == 'apply'
         run: terraform apply -auto-approve tfplan
-        working-directory: ${{ needs.scan_terraform_dirs.outputs.terraform_dir }}
+        working-directory: ${{ needs.display_info.outputs.target_directory }}
 
       - name: Generate Summary
         id: summary
         run: |
-          # First, display the list of all available Terraform directories
-          echo "### Available Terraform Directories" >> $GITHUB_STEP_SUMMARY
-          echo "${{ needs.scan_terraform_dirs.outputs.all_dirs_formatted }}" >> $GITHUB_STEP_SUMMARY
-          echo "Selected directory index: ${{ github.event.inputs.terraform_directory_index }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          echo "### Terraform Results for Directory: ${{ needs.scan_terraform_dirs.outputs.terraform_dir }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Terraform Results for Directory: ${{ needs.display_info.outputs.target_directory }}" >> $GITHUB_STEP_SUMMARY
           echo "**Action:** ${{ github.event.inputs.action }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "#### Status" >> $GITHUB_STEP_SUMMARY
@@ -173,7 +132,7 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "</details>" >> $GITHUB_STEP_SUMMARY
           fi
-        working-directory: ${{ needs.scan_terraform_dirs.outputs.terraform_dir }}
+        working-directory: ${{ needs.display_info.outputs.target_directory }}
 
       - name: Check for Failures
         if: |
