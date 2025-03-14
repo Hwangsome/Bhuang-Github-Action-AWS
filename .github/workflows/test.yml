@@ -39,7 +39,7 @@ jobs:
         
         # Loop through each branch and fetch its modules from modules.json
         for BRANCH in $BRANCHES; do
-          MODULES=$(jq -r --arg branch "$BRANCH" '.[$branch] | join(",")' .github/modules/modules.json)
+          MODULES=$(jq -r --arg branch "$BRANCH" '.[$branch] | join(",")' .github/terraform-modules/modules.json)
           if [ "$MODULES" != "null" ]; then
             MODULES_LIST="$MODULES_LIST$MODULES,"
           fi
