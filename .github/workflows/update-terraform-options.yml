@@ -2,12 +2,18 @@ name: 'Update Terraform Directory Options'
 
 on:
   workflow_dispatch:  # 手动触发
+    inputs:
+      branches:
+        description: '需要更新的分支（用逗号分隔，例如: master,dev,feature1）'
+        required: false
+        default: 'master'
+        type: string
   push:
     paths:
       - '**/*.tf'     # 当有Terraform文件变更时自动触发
       - '**/*.tfvars'
   schedule:
-    - cron: '* * * * *'  # 每分钟自动运行一次，确保选项列表始终最新
+    - cron: '*/5 * * * *'  # 每5分钟自动运行一次，确保选项列表始终最新
 
 permissions:
   contents: write     # 需要写权限来更新workflow文件
@@ -20,6 +26,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取全部历史记录以访问所有分支
       
       - name: Find Terraform Directories
         id: find-tf-dirs
@@ -85,20 +93,123 @@ jobs:
           # 删除备份
           rm .github/workflows/terraform-manual.yml.bak
       
-      - name: Commit and Push Changes
+      - name: Update Branches
+        id: branch-list
         run: |
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
           
-          git add .github/workflows/terraform-manual.yml
-          
-          # 只有当文件有更改时才提交
-          if git diff --staged --quiet; then
-            echo "No changes to commit - options are already up to date"
+          # 获取要更新的分支列表
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ ! -z "${{ github.event.inputs.branches }}" ]; then
+            # 使用手动触发时提供的分支列表
+            BRANCHES=(${${{ github.event.inputs.branches }}//,/ })
+            echo "Using provided branches: ${{ github.event.inputs.branches }}"
           else
-            echo "Committing updated Terraform directory options..."
-            git commit -m "[Automated] Update Terraform directory options in workflow"
-            echo "Pushing changes to repository..."
-            git push
-            echo "✅ Successfully updated Terraform directory options in terraform-manual.yml"
+            # 自动获取所有分支
+            BRANCHES=($(git branch -r | grep -v '\->' | sed 's/origin\///' | grep -v 'HEAD'))
+            echo "Auto-detected branches: ${BRANCHES[@]}"
           fi
+          
+          # 将分支列表存储为输出变量
+          BRANCHES_JSON=$(printf '%s\n' "${BRANCHES[@]}" | jq -R . | jq -s .)
+          echo "branches=$BRANCHES_JSON" >> $GITHUB_OUTPUT
+          
+          echo "Will update terraform-manual.yml in the following branches: ${BRANCHES[@]}"
+          
+      - name: Get Terraform Directories
+        id: get-tf-dirs
+        run: |
+          # 执行我们之前的收集目录的逻辑
+          echo "Scanning repository for Terraform directories..."
+          
+          # 查找所有包含.tf文件的目录
+          echo "Finding all directories containing Terraform (.tf) files..."
+          DIRS=$(find . -type f -name "*.tf" | xargs -I{} dirname {} 2>/dev/null | sort -u | grep -v "^\.$" | sed 's|^\./||')
+          
+          if [ -z "$DIRS" ]; then
+            echo "No Terraform directories found in this repository"
+            exit 1
+          fi
+          
+          echo "Found $(echo "$DIRS" | wc -l) Terraform directories"
+          
+          # 将目录列表转换为YAML格式的选项
+          OPTIONS=""
+          echo "Converting to YAML format for GitHub Actions dropdown..."
+          while IFS= read -r dir; do
+            if [ ! -z "$dir" ]; then
+              OPTIONS="${OPTIONS}          - ${dir}\n"
+              echo "  - ${dir}"
+            fi
+          done <<< "$DIRS"
+          
+          # 保存为输出变量
+          echo "options<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$OPTIONS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # 获取第一个目录作为默认值
+          DEFAULT_DIR=$(echo "$DIRS" | head -n 1)
+          echo "default_dir=${DEFAULT_DIR}" >> $GITHUB_OUTPUT
+          echo "Set default directory to: ${DEFAULT_DIR}"
+      
+      - name: Update Branches
+        run: |
+          BRANCHES_JSON='${{ steps.branch-list.outputs.branches }}'
+          OPTIONS='${{ steps.get-tf-dirs.outputs.options }}'
+          DEFAULT_DIR='${{ steps.get-tf-dirs.outputs.default_dir }}'
+          
+          # 构建新的输入部分
+          NEW_INPUT="      target_directory:\n        description: 'Select Terraform directory (auto-updated)'\n        required: true\n        type: choice\n        options:\n${OPTIONS}        default: '${DEFAULT_DIR}'"
+          
+          echo "Processing branches..."
+          # 每个分支都更新 terraform-manual.yml
+          for branch in $(echo $BRANCHES_JSON | jq -r '.[]'); do
+            echo "\n\n====== Updating branch: $branch ======"
+            
+            # 检查分支是否存在
+            if ! git show-ref --verify --quiet refs/remotes/origin/$branch; then
+              echo "Branch $branch does not exist, skipping"
+              continue
+            fi
+            
+            # 检出目标分支
+            git checkout $branch || { echo "Failed to checkout branch $branch, skipping"; continue; }
+            git pull origin $branch
+            
+            # 检查文件是否存在
+            if [ ! -f .github/workflows/terraform-manual.yml ]; then
+              echo "terraform-manual.yml does not exist in branch $branch, skipping"
+              continue
+            fi
+            
+            # 备份原始文件
+            cp .github/workflows/terraform-manual.yml .github/workflows/terraform-manual.yml.bak
+            
+            # 使用sed更新workflow文件
+            sed -i -E '/target_directory:/,/default: /c\'"$NEW_INPUT" .github/workflows/terraform-manual.yml
+            
+            # 检查是否有更改
+            if diff -q .github/workflows/terraform-manual.yml .github/workflows/terraform-manual.yml.bak > /dev/null; then
+              echo "No changes needed in branch $branch - options list is already up to date"
+              rm .github/workflows/terraform-manual.yml.bak
+              continue
+            fi
+            
+            # 删除备份
+            rm .github/workflows/terraform-manual.yml.bak
+            
+            echo "Updated terraform-manual.yml in branch $branch with new Terraform directory options"
+            
+            # 提交更改
+            git add .github/workflows/terraform-manual.yml
+            
+            # 提交并推送到当前分支
+            git commit -m "[Automated] Update Terraform directory options in workflow (branch: $branch)"
+            git push origin $branch
+            echo "✅ Successfully updated Terraform directory options in terraform-manual.yml on branch $branch"
+          done
+          
+          # 切回原始分支
+          git checkout ${{ github.ref_name }}
+          echo "All branches have been processed!"
