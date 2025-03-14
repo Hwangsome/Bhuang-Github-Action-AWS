@@ -64,61 +64,65 @@ jobs:
       - name: Scan Terraform Modules
         id: scan_modules
         run: |
-          # 遍历所有分支寻找Terraform模块
-          echo "{" > .github/terraform-modules/modules.json
+          # 为每个分支创建临时目录而不是依赖git分支切换
+          mkdir -p /tmp/terraform-scan
+          
+          # 创建空的modules.json以跟踪模块
+          echo "{" > /tmp/terraform-scan/modules.json
           FIRST_BRANCH=true
           
           for branch in $(cat .github/terraform-modules/branches.json | jq -r '.[]'); do
             echo "Scanning branch: $branch"
             
-            # 检出分支 - 改进版本
-            # 首先确保我们有这个分支的完整引用
-            git fetch origin $branch:refs/remotes/origin/$branch --force
+            # 创建分支特定的临时目录
+            BRANCH_DIR="/tmp/terraform-scan/$branch"
+            mkdir -p "$BRANCH_DIR"
             
-            # 如果有未提交的更改，先存储起来
-            git stash -u
-            
-            # 尝试从远程检出分支
-            if git show-ref --verify --quiet refs/remotes/origin/$branch; then
-              git checkout -f origin/$branch || { git checkout -b $branch --track origin/$branch; } || { echo "Failed to checkout $branch, skipping"; git stash pop; continue; }
+            # 直接使用git archive获取分支内容到临时目录，避免切换分支
+            if git rev-parse --verify origin/$branch >/dev/null 2>&1; then
+              git archive --remote=. origin/$branch | tar -x -C "$BRANCH_DIR"
+              echo "Successfully extracted branch: $branch"
             else
-              echo "Remote branch $branch not found, skipping"
+              echo "Branch $branch does not exist or is not accessible, skipping"
               continue
             fi
             
-            # 如果有暂存的更改，现在可以恢复
-            git stash pop 2>/dev/null || true
-            
-            # 查找Terraform模块目录
-            MODULES=$(find terraform -name "*.tf" | xargs -I{} dirname {} 2>/dev/null | sort -u | grep -v "modules" | sed 's/terraform\///')
+            # 在临时目录中查找Terraform模块
+            if [ -d "$BRANCH_DIR/terraform" ]; then
+              MODULES=$(find "$BRANCH_DIR/terraform" -name "*.tf" | xargs -I{} dirname {} 2>/dev/null | sort -u | grep -v "modules" | sed "s|$BRANCH_DIR/terraform/||")
+            else
+              echo "No terraform directory in branch $branch"
+              MODULES=""
+            fi
             
             # 如果有模块，添加到JSON
             if [ ! -z "$MODULES" ]; then
               if $FIRST_BRANCH; then
                 FIRST_BRANCH=false
-                echo "  \"$branch\": [" >> .github/terraform-modules/modules.json
+                echo "  \"$branch\": [" >> /tmp/terraform-scan/modules.json
               else
-                echo "  ,\"$branch\": [" >> .github/terraform-modules/modules.json
+                echo "  ,\"$branch\": [" >> /tmp/terraform-scan/modules.json
               fi
               
               FIRST_MODULE=true
               for module in $MODULES; do
                 if $FIRST_MODULE; then
                   FIRST_MODULE=false
-                  echo "    \"$module\"" >> .github/terraform-modules/modules.json
+                  echo "    \"$module\"" >> /tmp/terraform-scan/modules.json
                 else
-                  echo "    ,\"$module\"" >> .github/terraform-modules/modules.json
+                  echo "    ,\"$module\"" >> /tmp/terraform-scan/modules.json
                 fi
               done
               
-              echo "  ]" >> .github/terraform-modules/modules.json
+              echo "  ]" >> /tmp/terraform-scan/modules.json
             fi
           done
           
-          echo "}" >> .github/terraform-modules/modules.json
+          echo "}" >> /tmp/terraform-scan/modules.json
           
-          # 返回到主分支
-          git checkout master || git checkout main
+          # 复制结果到仓库
+          mkdir -p .github/terraform-modules
+          cp /tmp/terraform-scan/modules.json .github/terraform-modules/
       
       - name: Update Universal Workflow File
         run: |
