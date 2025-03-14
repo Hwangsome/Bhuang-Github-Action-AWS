@@ -1,0 +1,64 @@
+name: Dynamic Module Selection Based on Branches
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to select modules from'
+        required: true
+        default: 'master'
+
+jobs:
+  dynamic_modules:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Get all branches in the repository
+      id: get_branches
+      run: |
+        # Get a list of all branches in the repository
+        BRANCHES=$(git branch -r | grep -v '\->' | sed 's/origin\///')
+        
+        # Output the list of branches
+        echo "Branches found: $BRANCHES"
+        
+        # Set the branches as output for the next step
+        echo "::set-output name=branches::$BRANCHES"
+
+    - name: Read modules.json based on branches
+      id: read_modules
+      run: |
+        # Retrieve the branches from the previous step
+        BRANCHES="${{ steps.get_branches.outputs.branches }}"
+        
+        # Initialize an empty array to store modules
+        MODULES_LIST=""
+        
+        # Loop through each branch and fetch its modules from modules.json
+        for BRANCH in $BRANCHES; do
+          MODULES=$(jq -r --arg branch "$BRANCH" '.[$branch] | join(",")' .github/modules/modules.json)
+          if [ "$MODULES" != "null" ]; then
+            MODULES_LIST="$MODULES_LIST$MODULES,"
+          fi
+        done
+        
+        # Remove the last comma
+        MODULES_LIST=${MODULES_LIST%,}
+        
+        # Output the modules list for the next step
+        echo "Modules for branches: $MODULES_LIST"
+        echo "::set-output name=modules::$MODULES_LIST"
+
+    - name: Use dynamic modules
+      run: |
+        MODULES="${{ steps.read_modules.outputs.modules }}"
+        echo "Using the following modules: $MODULES"
+        # Use the modules in your logic here
+        # For example, loop over the modules and run specific tasks for each module
+        for module in $(echo $MODULES | tr "," "\n"); do
+          echo "Processing module: $module"
+          # You can add logic to run specific tasks for each module here
+        done
