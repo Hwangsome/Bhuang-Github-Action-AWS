@@ -1,4 +1,4 @@
-name: 扫描 Terraform 模块
+name: 扫描并创建 Terraform 工作流
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 jobs:
-  scan-terraform-modules:
+  scan-and-create-workflow:
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
@@ -21,170 +21,171 @@ jobs:
       
       - name: 检查 Terraform 目录
         run: |
+          echo "当前目录: $(pwd)"
+          echo "目录内容:"
+          ls -la
+          
           if [ -d "terraform" ]; then
             echo "找到 terraform 目录"
-            echo "目录内容:"
+            echo "Terraform 目录内容:"
             ls -la terraform/
           else
-            echo "未找到 terraform 目录，创建示例目录..."
-            mkdir -p terraform
-            echo "# Terraform 根目录" > terraform/README.md
+            echo "未找到 terraform 目录，创建一个..."
+            mkdir -p terraform/ec2
+            echo "# Example EC2 module" > terraform/ec2/main.tf
+            echo "创建了示例 terraform/ec2 目录"
           fi
       
-      - name: 创建模块扫描脚本
+      - name: 扫描 Terraform 模块
+        id: scan-modules
         run: |
-          cat > scan_terraform_modules.sh << 'EOF'
-          #!/bin/bash
+          echo "扫描 terraform 目录中的模块..."
           
-          # 设置工作流文件路径
-          WORKFLOW_FILE=".github/workflows/terraform-deploy.yml"
-          mkdir -p $(dirname "$WORKFLOW_FILE")
-          
-          # 扫描模块
-          echo "扫描 Terraform 模块..."
           if [ -d "terraform" ]; then
+            # 查找所有子目录
             MODULES=$(find terraform -maxdepth 1 -mindepth 1 -type d | sort)
             
             if [ -z "$MODULES" ]; then
-              echo "警告: 未找到 Terraform 模块"
-              MODULE_NAMES="[]"
+              echo "警告: 未找到 terraform 模块"
+              echo "模块选项将使用默认值"
               MODULE_OPTIONS="          - example-module"
             else
-              # 获取模块名称
-              MODULE_NAMES=()
+              # 提取模块名称并构建选项
               MODULE_OPTIONS=""
+              MODULES_LIST=()
               
               for module in $MODULES; do
                 module_name=$(basename "$module")
-                MODULE_NAMES+=("$module_name")
+                MODULES_LIST+=("$module_name")
                 MODULE_OPTIONS="${MODULE_OPTIONS}          - ${module_name}\n"
               done
               
               echo "找到以下模块:"
-              for name in "${MODULE_NAMES[@]}"; do
-                echo "  - $name"
-              done
+              printf "  - %s\n" "${MODULES_LIST[@]}"
             fi
           else
             echo "错误: terraform 目录不存在"
             MODULE_OPTIONS="          - example-module"
           fi
           
-          # 创建或更新工作流文件
-          if [ -f "$WORKFLOW_FILE" ]; then
-            echo "更新现有工作流文件..."
-            # 读取现有文件
-            CURRENT_CONTENT=$(cat "$WORKFLOW_FILE")
-            
-            # 查找模块选项部分
-            if grep -q "terraform_module:" "$WORKFLOW_FILE"; then
-              # 替换模块选项
-              START_LINE=$(grep -n "terraform_module:" "$WORKFLOW_FILE" | cut -d: -f1)
-              END_LINE=$(grep -n "environment:" "$WORKFLOW_FILE" | cut -d: -f1)
-              
-              # 构建新的模块选项部分
-              NEW_OPTIONS="      terraform_module:\n        description: '选择 Terraform 模块'\n        required: true\n        type: choice\n        options:\n$MODULE_OPTIONS"
-              
-              # 用 sed 替换部分内容
-              sed -i "${START_LINE},${END_LINE}s/terraform_module:.*options:.*/$NEW_OPTIONS/" "$WORKFLOW_FILE"
-            else
-              echo "无法在工作流文件中找到 terraform_module 部分"
-            fi
-          else
-            echo "创建新的工作流文件..."
-            cat > "$WORKFLOW_FILE" << EOL
-          name: Terraform 部署
-          
-          on:
-            workflow_dispatch:
-              inputs:
-                branch:
-                  description: '选择分支'
-                  required: true
-                  default: '$(git rev-parse --abbrev-ref HEAD)'
-                  type: choice
-                  options:
-                    - $(git rev-parse --abbrev-ref HEAD)
-                    - develop
-                    - staging
-                    - production
-                terraform_module:
-                  description: '选择 Terraform 模块'
-                  required: true
-                  type: choice
-                  options:
-          $(echo -e "$MODULE_OPTIONS")
-                environment:
-                  description: '选择部署环境'
-                  required: true
-                  type: choice
-                  options:
-                    - dev
-                    - test
-                    - prod
-                action:
-                  description: '执行操作'
-                  required: true
-                  type: choice
-                  options:
-                    - plan
-                    - apply
-                    - destroy
-          
-          jobs:
-            terraform-operation:
-              runs-on: ubuntu-latest
-              environment: \${{ github.event.inputs.environment }}
-              
-              steps:
-                - name: 检出代码
-                  uses: actions/checkout@v3
-                  with:
-                    ref: \${{ github.event.inputs.branch }}
-                
-                - name: 设置 Terraform
-                  uses: hashicorp/setup-terraform@v2
-                  with:
-                    terraform_version: 1.5.0
-                
-                - name: Terraform 初始化
-                  working-directory: terraform/\${{ github.event.inputs.terraform_module }}
-                  run: terraform init
-                
-                - name: Terraform 计划
-                  working-directory: terraform/\${{ github.event.inputs.terraform_module }}
-                  run: terraform plan -out=tfplan
-                
-                - name: Terraform 应用
-                  if: github.event.inputs.action == 'apply'
-                  working-directory: terraform/\${{ github.event.inputs.terraform_module }}
-                  run: terraform apply -auto-approve tfplan
-                
-                - name: Terraform 销毁
-                  if: github.event.inputs.action == 'destroy'
-                  working-directory: terraform/\${{ github.event.inputs.terraform_module }}
-                  run: terraform destroy -auto-approve
-          EOL
-          fi
-          
-          echo "工作流文件已更新: $WORKFLOW_FILE"
-          EOF
-          
-          chmod +x scan_terraform_modules.sh
+          # 保存模块选项供后续步骤使用
+          echo "module_options<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$MODULE_OPTIONS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
       
-      - name: 运行模块扫描脚本
-        run: ./scan_terraform_modules.sh
-      
-      - name: 提交更新的工作流文件
+      - name: 创建工作流文件
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          # 确保目录存在
+          mkdir -p .github/workflows
           
-          if git diff --name-only | grep -q ".github/workflows/terraform-deploy.yml"; then
-            echo "检测到工作流文件更改，提交更新..."
-            git add .github/workflows/terraform-deploy.yml
-            git commit -m "更新 Terraform 模块选项 [skip ci]"
-            git push
+          # 设置工作流文件路径
+          WORKFLOW_FILE=".github/workflows/terraform-deploy.yml"
+          
+          # 创建工作流文件内容
+          cat > $WORKFLOW_FILE << EOL
+name: Terraform 部署
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: '选择分支'
+        required: true
+        default: '${{ github.ref_name }}'
+        type: choice
+        options:
+          - ${{ github.ref_name }}
+          - develop
+          - staging
+          - production
+      terraform_module:
+        description: '选择 Terraform 模块'
+        required: true
+        type: choice
+        options:
+${{ steps.scan-modules.outputs.module_options }}
+      environment:
+        description: '选择部署环境'
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+      action:
+        description: '执行操作'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+jobs:
+  terraform-operation:
+    runs-on: ubuntu-latest
+    environment: \${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v3
+        with:
+          ref: \${{ github.event.inputs.branch }}
+      
+      - name: 设置 Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.0
+      
+      - name: Terraform 初始化
+        working-directory: terraform/\${{ github.event.inputs.terraform_module }}
+        run: terraform init
+      
+      - name: Terraform 计划
+        working-directory: terraform/\${{ github.event.inputs.terraform_module }}
+        run: terraform plan -out=tfplan
+      
+      - name: Terraform 应用
+        if: github.event.inputs.action == 'apply'
+        working-directory: terraform/\${{ github.event.inputs.terraform_module }}
+        run: terraform apply -auto-approve tfplan
+      
+      - name: Terraform 销毁
+        if: github.event.inputs.action == 'destroy'
+        working-directory: terraform/\${{ github.event.inputs.terraform_module }}
+        run: terraform destroy -auto-approve
+EOL
+
+          echo "工作流文件已创建: $WORKFLOW_FILE"
+          echo "文件内容:"
+          cat $WORKFLOW_FILE
+      
+      - name: 调试 Git 状态
+        run: |
+          echo "Git 状态:"
+          git status
+          
+          echo "检查工作流文件是否存在:"
+          if [ -f ".github/workflows/terraform-deploy.yml" ]; then
+            echo "文件存在"
           else
-            echo "没有更改需要提交"
+            echo "文件不存在"
           fi
+          
+          echo "文件差异:"
+          git diff
+      
+      - name: 提交更改
+        run: |
+          # 配置 Git
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # 添加并提交文件
+          git add .github/workflows/terraform-deploy.yml
+          
+          # 使用 --allow-empty 允许空提交
+          git commit -m "更新 Terraform 部署工作流 [skip ci]" --allow-empty || echo "没有更改需要提交"
+          
+          # 推送更改
+          git push || echo "推送失败，可能是权限问题"
