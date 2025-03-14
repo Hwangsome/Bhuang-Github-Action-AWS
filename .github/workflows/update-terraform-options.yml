@@ -1,0 +1,104 @@
+name: 'Update Terraform Directory Options'
+
+on:
+  workflow_dispatch:  # 手动触发
+  push:
+    paths:
+      - '**/*.tf'     # 当有Terraform文件变更时自动触发
+      - '**/*.tfvars'
+  schedule:
+    - cron: '* * * * *'  # 每分钟自动运行一次，确保选项列表始终最新
+
+permissions:
+  contents: write     # 需要写权限来更新workflow文件
+
+jobs:
+  update_options:
+    name: 'Update Terraform Options'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Find Terraform Directories
+        id: find-tf-dirs
+        run: |
+          echo "Scanning repository for Terraform directories..."
+          
+          # 查找所有包含.tf文件的目录
+          echo "Finding all directories containing Terraform (.tf) files..."
+          DIRS=$(find . -type f -name "*.tf" | xargs -I{} dirname {} 2>/dev/null | sort -u | grep -v "^\.$" | sed 's|^\./||')
+          
+          if [ -z "$DIRS" ]; then
+            echo "No Terraform directories found in this repository"
+            exit 1
+          fi
+          
+          echo "Found $(echo "$DIRS" | wc -l) Terraform directories"
+          
+          # 将目录列表转换为YAML格式的选项
+          OPTIONS=""
+          echo "Converting to YAML format for GitHub Actions dropdown..."
+          while IFS= read -r dir; do
+            if [ ! -z "$dir" ]; then
+              OPTIONS="${OPTIONS}          - ${dir}\n"
+              echo "  - ${dir}"
+            fi
+          done <<< "$DIRS"
+          
+          # 保存为输出变量
+          echo "options<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$OPTIONS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # 获取第一个目录作为默认值
+          DEFAULT_DIR=$(echo "$DIRS" | head -n 1)
+          echo "default_dir=${DEFAULT_DIR}" >> $GITHUB_OUTPUT
+          echo "Set default directory to: ${DEFAULT_DIR}"
+      
+      - name: Update Workflow File
+        run: |
+          echo "Updating terraform-manual.yml with dynamically discovered Terraform directories..."
+          
+          OPTIONS='${{ steps.find-tf-dirs.outputs.options }}'
+          DEFAULT_DIR='${{ steps.find-tf-dirs.outputs.default_dir }}'
+          
+          # 构建新的输入部分
+          NEW_INPUT="      target_directory:\n        description: 'Select Terraform directory (auto-updated)'\n        required: true\n        type: choice\n        options:\n${OPTIONS}        default: '${DEFAULT_DIR}'"
+          
+          # 备份原始文件
+          cp .github/workflows/terraform-manual.yml .github/workflows/terraform-manual.yml.bak
+          
+          # 使用sed更新workflow文件
+          sed -i -E '/target_directory:/,/default: /c\'"$NEW_INPUT" .github/workflows/terraform-manual.yml
+          
+          # 检查是否有更改
+          if diff -q .github/workflows/terraform-manual.yml .github/workflows/terraform-manual.yml.bak > /dev/null; then
+            echo "No changes needed - options list is already up to date"
+          else
+            echo "Updated terraform-manual.yml with new Terraform directory options"
+            echo "New options list:"
+            grep -A 20 "target_directory:" .github/workflows/terraform-manual.yml
+          fi
+          
+          # 删除备份
+          rm .github/workflows/terraform-manual.yml.bak
+      
+      - name: Commit and Push Changes
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          
+          git add .github/workflows/terraform-manual.yml
+          
+          # 只有当文件有更改时才提交
+          if git diff --staged --quiet; then
+            echo "No changes to commit - options are already up to date"
+          else
+            echo "Committing updated Terraform directory options..."
+            git commit -m "[Automated] Update Terraform directory options in workflow"
+            echo "Pushing changes to repository..."
+            git push
+            echo "✅ Successfully updated Terraform directory options in terraform-manual.yml"
+          fi
