@@ -71,8 +71,23 @@ jobs:
           for branch in $(cat .github/terraform-modules/branches.json | jq -r '.[]'); do
             echo "Scanning branch: $branch"
             
-            # 检出分支
-            git checkout $branch 2>/dev/null || { echo "Failed to checkout $branch, skipping"; continue; }
+            # 检出分支 - 改进版本
+            # 首先确保我们有这个分支的完整引用
+            git fetch origin $branch:refs/remotes/origin/$branch --force
+            
+            # 如果有未提交的更改，先存储起来
+            git stash -u
+            
+            # 尝试从远程检出分支
+            if git show-ref --verify --quiet refs/remotes/origin/$branch; then
+              git checkout -f origin/$branch || { git checkout -b $branch --track origin/$branch; } || { echo "Failed to checkout $branch, skipping"; git stash pop; continue; }
+            else
+              echo "Remote branch $branch not found, skipping"
+              continue
+            fi
+            
+            # 如果有暂存的更改，现在可以恢复
+            git stash pop 2>/dev/null || true
             
             # 查找Terraform模块目录
             MODULES=$(find terraform -name "*.tf" | xargs -I{} dirname {} 2>/dev/null | sort -u | grep -v "modules" | sed 's/terraform\///')
