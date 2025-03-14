@@ -3,14 +3,6 @@ name: 'Universal Terraform Workflow'
 on:
   workflow_dispatch:
     inputs:
-      workflow_from:
-        description: 'Use workflow from'
-        required: true
-        type: choice
-        options:
-          - master
-          - test2
-        default: 'master'
       terraform_directory:
         description: 'Select Terraform directory (auto-updated)'
         required: true
