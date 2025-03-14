@@ -7,10 +7,9 @@ on:
         description: 'Branch to use'
         required: true
         type: choice
-        options: |
-          <!-- BRANCH_OPTIONS -->
-          master
-          test2
+        options:
+          - master
+          - test2
         default: 'master'
       terraform_directory:
         description: 'Select Terraform directory (auto-updated)'
@@ -48,31 +47,50 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
+      
+      - name: Debug - List Repository Structure
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Repository root contents:"
+          ls -la
           
+          echo "Checking .github directory:"
+          ls -la .github || echo ".github directory not found"
+          
+          echo "Checking terraform-modules directory:"
+          ls -la .github/terraform-modules || echo ".github/terraform-modules directory not found"
+          
+          echo "Checking for modules.json:"
+          if [ -f ".github/terraform-modules/modules.json" ]; then
+            echo "modules.json content:"
+            cat .github/terraform-modules/modules.json
+          else
+            echo "modules.json file not found"
+          fi
+          
+      - name: Ensure Required Directories Exist
+        run: |
+          mkdir -p .github/terraform-modules
+          
+          # 如果modules.json不存在，创建一个默认的
+          if [ ! -f ".github/terraform-modules/modules.json" ]; then
+            echo "Creating default modules.json file"
+            echo '{
+              "master": ["ec2"],
+              "test2": ["ec2"]
+            }' > .github/terraform-modules/modules.json
+            cat .github/terraform-modules/modules.json
+          fi
+      
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '16'
-          
+      
       - name: Install Dependencies
         run: |
           npm install @actions/core js-yaml
-          
-      - name: Read Branch Configuration
-        id: read_branches
-        run: |
-          if [ -f ".github/terraform-modules/branches.json" ]; then
-            BRANCHES=$(cat .github/terraform-modules/branches.json | jq -r '. | join("\n")')
-            echo "Available branches from configuration: $BRANCHES"
-          else
-            echo "branches.json not found, using default branches"
-            BRANCHES="master
-            test2"
-          fi
-          echo "branches<<EOF" >> $GITHUB_OUTPUT
-          echo "$BRANCHES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          
+      
       - name: Read Module Configuration
         id: read_modules
         run: |
@@ -80,14 +98,18 @@ jobs:
           echo "Reading modules for branch: $BRANCH"
           
           if [ -f ".github/terraform-modules/modules.json" ]; then
-            # Check if the branch exists in the modules.json file
-            if cat ".github/terraform-modules/modules.json" | jq -e ".$BRANCH" > /dev/null; then
-              MODULES=$(cat ".github/terraform-modules/modules.json" | jq -r ".$BRANCH | map(\"terraform/\" + .)" | jq -r '. | join("\n")')
-              echo "Found modules for branch $BRANCH: $MODULES"
-            else
-              echo "Branch $BRANCH not found in modules.json, using default module"
-              MODULES="terraform/ec2"
-            fi
+            # Extract modules for the current branch
+            MODULES=$(node -e "
+              const fs = require('fs');
+              const data = JSON.parse(fs.readFileSync('.github/terraform-modules/modules.json', 'utf8'));
+              const branch = '$BRANCH';
+              if (data[branch]) {
+                console.log(data[branch].map(m => 'terraform/' + m).join('\n'));
+              } else {
+                console.log('terraform/ec2');
+              }
+            ")
+            echo "Found modules for branch $BRANCH: $MODULES"
           else
             echo "modules.json not found, using default module"
             MODULES="terraform/ec2"
@@ -109,7 +131,7 @@ jobs:
           AVAILABLE_MODULES="${{ steps.read_modules.outputs.modules }}"
           DEFAULT_MODULE="${{ steps.read_modules.outputs.default_module }}"
           
-          if echo "$AVAILABLE_MODULES" | grep -q "^$SELECTED_DIR$"; then
+          if [[ "$AVAILABLE_MODULES" == *"$SELECTED_DIR"* ]]; then
             echo "Using selected directory: $SELECTED_DIR"
             FINAL_DIR="$SELECTED_DIR"
           else
@@ -140,6 +162,32 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.0"
+      
+      - name: Check Directory Existence
+        run: |
+          if [ -d "${{ needs.load_options.outputs.terraform_directory }}" ]; then
+            echo "Directory ${{ needs.load_options.outputs.terraform_directory }} exists"
+          else
+            echo "Directory ${{ needs.load_options.outputs.terraform_directory }} does not exist"
+            echo "Creating directory..."
+            mkdir -p "${{ needs.load_options.outputs.terraform_directory }}"
+            
+            # 创建一个基本的 Terraform 文件
+            echo 'provider "aws" {
+              region = "us-west-2"
+            }
+            
+            # 占位资源
+            resource "aws_s3_bucket" "example" {
+              bucket_prefix = "example-bucket-"
+              tags = {
+                Environment = "Dev"
+                Created     = "Terraform"
+              }
+            }' > "${{ needs.load_options.outputs.terraform_directory }}/main.tf"
+            
+            echo "Created basic Terraform configuration"
+          fi
           
       - name: Terraform Format
         id: fmt
