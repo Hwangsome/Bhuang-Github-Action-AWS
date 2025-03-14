@@ -28,69 +28,7 @@ jobs:
         with:
           fetch-depth: 0  # 获取全部历史记录以访问所有分支
       
-      - name: Find Terraform Directories
-        id: find-tf-dirs
-        run: |
-          echo "Scanning repository for Terraform directories..."
-          
-          # 查找所有包含.tf文件的目录
-          echo "Finding all directories containing Terraform (.tf) files..."
-          DIRS=$(find . -type f -name "*.tf" | xargs -I{} dirname {} 2>/dev/null | sort -u | grep -v "^\.$" | sed 's|^\./||')
-          
-          if [ -z "$DIRS" ]; then
-            echo "No Terraform directories found in this repository"
-            exit 1
-          fi
-          
-          echo "Found $(echo "$DIRS" | wc -l) Terraform directories"
-          
-          # 将目录列表转换为YAML格式的选项
-          OPTIONS=""
-          echo "Converting to YAML format for GitHub Actions dropdown..."
-          while IFS= read -r dir; do
-            if [ ! -z "$dir" ]; then
-              OPTIONS="${OPTIONS}          - ${dir}\n"
-              echo "  - ${dir}"
-            fi
-          done <<< "$DIRS"
-          
-          # 保存为输出变量
-          echo "options<<EOF" >> $GITHUB_OUTPUT
-          echo -e "$OPTIONS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          
-          # 获取第一个目录作为默认值
-          DEFAULT_DIR=$(echo "$DIRS" | head -n 1)
-          echo "default_dir=${DEFAULT_DIR}" >> $GITHUB_OUTPUT
-          echo "Set default directory to: ${DEFAULT_DIR}"
-      
-      - name: Update Workflow File
-        run: |
-          echo "Updating terraform-manual.yml with dynamically discovered Terraform directories..."
-          
-          OPTIONS='${{ steps.find-tf-dirs.outputs.options }}'
-          DEFAULT_DIR='${{ steps.find-tf-dirs.outputs.default_dir }}'
-          
-          # 构建新的输入部分
-          NEW_INPUT="      target_directory:\n        description: 'Select Terraform directory (auto-updated)'\n        required: true\n        type: choice\n        options:\n${OPTIONS}        default: '${DEFAULT_DIR}'"
-          
-          # 备份原始文件
-          cp .github/workflows/terraform-manual.yml .github/workflows/terraform-manual.yml.bak
-          
-          # 使用sed更新workflow文件
-          sed -i -E '/target_directory:/,/default: /c\'"$NEW_INPUT" .github/workflows/terraform-manual.yml
-          
-          # 检查是否有更改
-          if diff -q .github/workflows/terraform-manual.yml .github/workflows/terraform-manual.yml.bak > /dev/null; then
-            echo "No changes needed - options list is already up to date"
-          else
-            echo "Updated terraform-manual.yml with new Terraform directory options"
-            echo "New options list:"
-            grep -A 20 "target_directory:" .github/workflows/terraform-manual.yml
-          fi
-          
-          # 删除备份
-          rm .github/workflows/terraform-manual.yml.bak
+
       
       - name: Determine Target Branch
         id: get-branch
@@ -179,8 +117,35 @@ jobs:
           # 备份原始文件
           cp .github/workflows/terraform-manual.yml .github/workflows/terraform-manual.yml.bak
           
-          # 使用sed更新workflow文件
-          sed -i -E '/target_directory:/,/default: /c\'"$NEW_INPUT" .github/workflows/terraform-manual.yml
+          # 使用更可靠的方式更新workflow文件
+          # 创建临时文件
+          TMP_FILE=$(mktemp)
+          echo -e "$NEW_INPUT" > "$TMP_FILE"
+          
+          # 使用awk替换sed
+          awk -v input_file="$TMP_FILE" '
+            BEGIN {found=0; replaced=0}
+            /target_directory:/,/default:/ {
+              if (!replaced) {
+                system("cat " input_file)
+                replaced=1
+              }
+              found=1
+              next
+            }
+            {if (!found || (found && replaced)) print}
+          ' .github/workflows/terraform-manual.yml.bak > .github/workflows/terraform-manual.yml.tmp
+          
+          # 如果结果有效，替换原文件
+          if [ -s .github/workflows/terraform-manual.yml.tmp ]; then
+            mv .github/workflows/terraform-manual.yml.tmp .github/workflows/terraform-manual.yml
+          else
+            echo "Error: Failed to update file, keeping original"
+            cp .github/workflows/terraform-manual.yml.bak .github/workflows/terraform-manual.yml
+          fi
+          
+          # 清理临时文件
+          rm -f "$TMP_FILE" .github/workflows/terraform-manual.yml.tmp 2>/dev/null
           
           # 检查是否有更改
           if diff -q .github/workflows/terraform-manual.yml .github/workflows/terraform-manual.yml.bak > /dev/null; then
