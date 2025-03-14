@@ -16,7 +16,6 @@ on:
 
 permissions:
   contents: write     # 需要写权限来更新仓库文件
-  workflows: write   # 明确授予更新workflow文件的权限
 
 jobs:
   update_options:
@@ -160,11 +159,15 @@ jobs:
           
           echo "Updated terraform-manual.yml with new Terraform directory options"
           
-          # 提交更改
+          # 注意: 因为安全限制，工作流不能直接更新工作流文件
+          # 创建一个新分支来存储更改
+          NEW_BRANCH="terraform-options-update-$(date +%s)"
+          git checkout -b $NEW_BRANCH
+          
+          # 提交更改到新分支
           git add .github/workflows/terraform-manual.yml
-          
-          # 提交并推送到目标分支
           git commit -m "[Automated] Update Terraform directory options in workflow"
-          git push origin $TARGET_BRANCH
+          git push origin $NEW_BRANCH
           
-          echo "✅ Successfully updated Terraform directory options in terraform-manual.yml on branch $TARGET_BRANCH"
+          echo "✅ 提交了更新到新分支: $NEW_BRANCH"
+          echo "请从该分支创建 PR 到 $TARGET_BRANCH 来完成工作流更新"
