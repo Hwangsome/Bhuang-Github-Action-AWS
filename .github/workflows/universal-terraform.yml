@@ -1,0 +1,210 @@
+name: 'Universal Terraform Workflow'
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to use'
+        required: true
+        type: choice
+        options: |
+          <!-- BRANCH_OPTIONS -->
+          master
+          test2
+        default: 'master'
+      terraform_directory:
+        description: 'Select Terraform directory (auto-updated)'
+        required: true
+        type: choice
+        options:
+          - terraform/ec2
+        default: 'terraform/ec2'
+      action:
+        description: 'Terraform action to perform'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+        default: 'plan'
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+env:
+  AWS_REGION: 'us-west-2'
+
+jobs:
+  load_options:
+    name: 'Load Branch and Directory Options'
+    runs-on: ubuntu-latest
+    outputs:
+      terraform_directory: ${{ steps.set_directory.outputs.terraform_directory }}
+      
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+          
+      - name: Install Dependencies
+        run: |
+          npm install @actions/core js-yaml
+          
+      - name: Read Branch Configuration
+        id: read_branches
+        run: |
+          if [ -f ".github/terraform-modules/branches.json" ]; then
+            BRANCHES=$(cat .github/terraform-modules/branches.json | jq -r '. | join("\n")')
+            echo "Available branches from configuration: $BRANCHES"
+          else
+            echo "branches.json not found, using default branches"
+            BRANCHES="master
+            test2"
+          fi
+          echo "branches<<EOF" >> $GITHUB_OUTPUT
+          echo "$BRANCHES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+      - name: Read Module Configuration
+        id: read_modules
+        run: |
+          BRANCH="${{ github.event.inputs.branch }}"
+          echo "Reading modules for branch: $BRANCH"
+          
+          if [ -f ".github/terraform-modules/modules.json" ]; then
+            # Check if the branch exists in the modules.json file
+            if cat ".github/terraform-modules/modules.json" | jq -e ".$BRANCH" > /dev/null; then
+              MODULES=$(cat ".github/terraform-modules/modules.json" | jq -r ".$BRANCH | map(\"terraform/\" + .)" | jq -r '. | join("\n")')
+              echo "Found modules for branch $BRANCH: $MODULES"
+            else
+              echo "Branch $BRANCH not found in modules.json, using default module"
+              MODULES="terraform/ec2"
+            fi
+          else
+            echo "modules.json not found, using default module"
+            MODULES="terraform/ec2"
+          fi
+          
+          echo "modules<<EOF" >> $GITHUB_OUTPUT
+          echo "$MODULES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # Get first module as default
+          DEFAULT_MODULE=$(echo "$MODULES" | head -n 1)
+          echo "default_module=$DEFAULT_MODULE" >> $GITHUB_OUTPUT
+      
+      - name: Set Directory Based on Configuration
+        id: set_directory
+        run: |
+          # Use the selected directory if it's in the list of available modules, otherwise use the default
+          SELECTED_DIR="${{ github.event.inputs.terraform_directory }}"
+          AVAILABLE_MODULES="${{ steps.read_modules.outputs.modules }}"
+          DEFAULT_MODULE="${{ steps.read_modules.outputs.default_module }}"
+          
+          if echo "$AVAILABLE_MODULES" | grep -q "^$SELECTED_DIR$"; then
+            echo "Using selected directory: $SELECTED_DIR"
+            FINAL_DIR="$SELECTED_DIR"
+          else
+            echo "Selected directory not available for this branch, using default: $DEFAULT_MODULE"
+            FINAL_DIR="$DEFAULT_MODULE"
+          fi
+          
+          echo "terraform_directory=$FINAL_DIR" >> $GITHUB_OUTPUT
+          
+  terraform_run:
+    name: 'Terraform ${{ github.event.inputs.action }}'
+    needs: load_options
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+          
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+          
+      - name: Terraform Format
+        id: fmt
+        run: terraform fmt -check
+        working-directory: ${{ needs.load_options.outputs.terraform_directory }}
+        continue-on-error: true
+        
+      - name: Terraform Init
+        id: init
+        run: terraform init
+        working-directory: ${{ needs.load_options.outputs.terraform_directory }}
+        
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+        working-directory: ${{ needs.load_options.outputs.terraform_directory }}
+        
+      - name: Terraform Plan
+        id: plan
+        if: github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
+        run: |
+          terraform plan -no-color -out=tfplan
+          terraform show -json tfplan > plan.json
+          echo 'PLAN<<EOF' >> $GITHUB_OUTPUT
+          terraform show -no-color tfplan >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+        working-directory: ${{ needs.load_options.outputs.terraform_directory }}
+        
+      - name: Terraform Apply
+        id: apply
+        if: github.event.inputs.action == 'apply'
+        run: terraform apply -auto-approve tfplan
+        working-directory: ${{ needs.load_options.outputs.terraform_directory }}
+        
+      - name: Generate Summary
+        id: summary
+        run: |
+          echo "### Terraform Results" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.event.inputs.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Directory:** ${{ needs.load_options.outputs.terraform_directory }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** ${{ github.event.inputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Status" >> $GITHUB_STEP_SUMMARY
+          echo "* Format and Style 🖌 \`${{ steps.fmt.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "* Initialization ⚙️ \`${{ steps.init.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "* Validation 🤖 \`${{ steps.validate.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ github.event.inputs.action }}" == "plan" ] || [ "${{ github.event.inputs.action }}" == "apply" ]; then
+            echo "* Plan 📖 \`${{ steps.plan.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ github.event.inputs.action }}" == "apply" ]; then
+            echo "* Apply 🚀 \`${{ steps.apply.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f plan.json ]; then
+            echo "#### Resource Changes" >> $GITHUB_STEP_SUMMARY
+            echo "<details><summary>Show Changes</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Resource | Action | Type |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|--------|------|" >> $GITHUB_STEP_SUMMARY
+            jq -r '.resource_changes[]? | "| " + .address + " | " + (.change.actions | join(", ")) + " | " + .type + " |"' plan.json >> $GITHUB_STEP_SUMMARY || echo "| No changes | - | - |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
+        working-directory: ${{ needs.load_options.outputs.terraform_directory }}
