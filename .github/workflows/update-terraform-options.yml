@@ -1,14 +1,8 @@
 name: 'Update Terraform Directory Options'
 
 on:
-  # 手动触发时扫描指定分支
-  workflow_dispatch:  
-    inputs:
-      branch:
-        description: '需要扫描的分支名称'
-        required: true
-        default: 'master'
-        type: string
+  # 手动触发扫描
+  workflow_dispatch:
   # 当Terraform文件变更时自动扫描master分支
   push:
     branches:
@@ -104,11 +98,11 @@ jobs:
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
           
-          # 根据触发类型确定目标分支
+          # 获取当前分支
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            # 手动触发，使用指定的分支
-            TARGET_BRANCH="${{ github.event.inputs.branch }}"
-            echo "Using manually specified branch: $TARGET_BRANCH"
+            # 手动触发，使用当前分支
+            TARGET_BRANCH="${{ github.ref_name }}"
+            echo "Manual trigger, using current branch: $TARGET_BRANCH"
           else
             # 自动触发，只扫描 master 分支
             TARGET_BRANCH="master"
