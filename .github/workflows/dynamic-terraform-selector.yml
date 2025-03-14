@@ -3,6 +3,8 @@ name: 动态 Terraform 模块选择器
 # 此工作流分为两部分：
 # 1. 首先获取分支列表和每个分支下的 Terraform 模块列表
 # 2. 然后使用这些信息运行实际的 Terraform 操作
+permissions:
+  contents: write  # 添加此行
 
 on:
   workflow_dispatch:
