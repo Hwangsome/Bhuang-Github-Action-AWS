@@ -15,7 +15,8 @@ on:
     - cron: '*/5 * * * *'  # 每5分钟自动运行一次
 
 permissions:
-  contents: write     # 需要写权限来更新workflow文件
+  contents: write     # 需要写权限来更新仓库文件
+  workflows: write   # 明确授予更新workflow文件的权限
 
 jobs:
   update_options:
