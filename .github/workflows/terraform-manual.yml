@@ -4,17 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       target_directory:
-        description: 'Select Terraform directory'
+        description: 'Select Terraform directory (auto-updated)'
         required: true
         type: choice
         options:
           - terraform/ec2
-          - terraform/s3
-          - terraform/vpc
-          - terraform/lambda
-          - spark/terraform
-          - scripts/terraform
         default: 'terraform/ec2'
+        # Note: The options above are just initial values
+        # Actual options will be loaded at runtime from the dynamic configuration file
       action:
         description: 'Terraform action to perform'
         required: true
@@ -38,14 +35,36 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       target_directory: ${{ github.event.inputs.target_directory }}
+      directory_options: ${{ steps.load_config.outputs.directory_options }}
+      default_directory: ${{ steps.load_config.outputs.default_directory }}
     
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
       
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+      
+      - name: Install Dependencies
+        run: |
+          npm install @actions/core js-yaml
+          
+      - name: Load Directory Options from Config
+        id: load_config
+        run: |
+          echo "Checking configuration files..."
+          node .github/workflows/terraform-manual-dynamic.js
+        env:
+          ACTIONS_RUNNER_DEBUG: true
+          
       - name: Display Selected Directory
         run: |
-          echo "Selected Terraform directory: ${{ github.event.inputs.target_directory }}"
+          echo "Dynamic configuration loaded"
+          echo "Available directories: ${{ steps.load_config.outputs.directory_options }}"
+          echo "Default directory: ${{ steps.load_config.outputs.default_directory }}"
+          echo "Selected directory: ${{ github.event.inputs.target_directory }}"
           echo "target_directory=${{ github.event.inputs.target_directory }}" >> $GITHUB_OUTPUT
 
   terraform_manual:
