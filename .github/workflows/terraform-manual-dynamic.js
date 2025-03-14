@@ -1,0 +1,162 @@
+name: 'Terraform Manual Workflow'
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_directory:
+        description: 'Select Terraform directory (auto-updated)'
+        required: true
+        type: choice
+        options:
+          - terraform/ec2
+        default: 'terraform/ec2'
+        # Note: The options above are just initial values
+        # Actual options will be loaded at runtime from the dynamic configuration file
+      action:
+        description: 'Terraform action to perform'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+        default: 'plan'
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+env:
+  AWS_REGION: 'us-west-2'
+
+jobs:
+  display_info:
+    name: 'Display Terraform Directory Info'
+    runs-on: ubuntu-latest
+    outputs:
+      target_directory: ${{ github.event.inputs.target_directory }}
+      directory_options: ${{ steps.load_config.outputs.directory_options }}
+      default_directory: ${{ steps.load_config.outputs.default_directory }}
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+      
+      - name: Install Dependencies
+        run: |
+          npm install @actions/core js-yaml
+          
+      - name: Load Directory Options from Config
+        id: load_config
+        run: |
+          echo "Checking configuration files..."
+          node .github/workflows/terraform-manual-dynamic.js
+        env:
+          ACTIONS_RUNNER_DEBUG: true
+          
+      - name: Display Selected Directory
+        run: |
+          echo "Dynamic configuration loaded"
+          echo "Available directories: ${{ steps.load_config.outputs.directory_options }}"
+          echo "Default directory: ${{ steps.load_config.outputs.default_directory }}"
+          echo "Selected directory: ${{ github.event.inputs.target_directory }}"
+          echo "target_directory=${{ github.event.inputs.target_directory }}" >> $GITHUB_OUTPUT
+
+  terraform_manual:
+    name: 'Terraform Manual Plan'
+    needs: display_info
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+
+      - name: Terraform Format
+        id: fmt
+        run: terraform fmt -check
+        working-directory: ${{ needs.display_info.outputs.target_directory }}
+        continue-on-error: true
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+        working-directory: ${{ needs.display_info.outputs.target_directory }}
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+        working-directory: ${{ needs.display_info.outputs.target_directory }}
+
+      - name: Terraform Plan
+        id: plan
+        if: github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
+        run: |
+          terraform plan -no-color -out=tfplan
+          terraform show -json tfplan > plan.json
+          echo 'PLAN<<EOF' >> $GITHUB_OUTPUT
+          terraform show -no-color tfplan >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+        working-directory: ${{ needs.display_info.outputs.target_directory }}
+
+      - name: Terraform Apply
+        id: apply
+        if: github.event.inputs.action == 'apply'
+        run: terraform apply -auto-approve tfplan
+        working-directory: ${{ needs.display_info.outputs.target_directory }}
+
+      - name: Generate Summary
+        id: summary
+        run: |
+          echo "### Terraform Results for Directory: ${{ needs.display_info.outputs.target_directory }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** ${{ github.event.inputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Status" >> $GITHUB_STEP_SUMMARY
+          echo "* Format and Style 🖌 \`${{ steps.fmt.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "* Initialization ⚙️ \`${{ steps.init.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "* Validation 🤖 \`${{ steps.validate.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ github.event.inputs.action }}" == "plan" ] || [ "${{ github.event.inputs.action }}" == "apply" ]; then
+            echo "* Plan 📖 \`${{ steps.plan.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ github.event.inputs.action }}" == "apply" ]; then
+            echo "* Apply 🚀 \`${{ steps.apply.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f plan.json ]; then
+            echo "#### Resource Changes" >> $GITHUB_STEP_SUMMARY
+            echo "<details><summary>Show Changes</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Resource | Action | Type |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|--------|------|" >> $GITHUB_STEP_SUMMARY
+            jq -r '.resource_changes[]? | "| " + .address + " | " + (.change.actions | join(", ")) + " | " + .type + " |"' plan.json >> $GITHUB_STEP_SUMMARY || echo "| No changes | - | - |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
+        working-directory: ${{ needs.display_info.outputs.target_directory }}
+
+      - name: Check for Failures
+        if: |
+          steps.init.outcome == 'failure' || 
+          steps.validate.outcome == 'failure' || 
+          (github.event.inputs.action == 'plan' && steps.plan.outcome == 'failure') || 
+          (github.event.inputs.action == 'apply' && steps.apply.outcome == 'failure')
+        run: exit 1
