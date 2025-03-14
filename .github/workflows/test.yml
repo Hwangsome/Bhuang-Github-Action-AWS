@@ -28,42 +28,103 @@ jobs:
       - name: 获取所有分支
         id: get-branches
         run: |
-          # 获取所有分支并转为单行JSON (没有漂亮格式)
-          BRANCHES=$(git branch -r | grep -v HEAD | sed 's/origin\///g' | tr -d ' ' | jq -c -R -s 'split("\n") | map(select(length > 0))')
+          # 获取所有分支并转为单行JSON
+          BRANCHES=$(git branch -r | grep -v HEAD | sed 's/origin\///g' | tr -d ' ' | jq -c -R '[inputs | select(length>0)]' --slurp)
+          # 确保JSON格式正确
+          if ! echo "$BRANCHES" | jq empty 2>/dev/null; then
+            echo "警告: 分支格式不正确，使用默认值"
+            BRANCHES='["master"]'
+          fi
           echo "branches=$BRANCHES" >> $GITHUB_OUTPUT
           echo "找到的分支: $BRANCHES"
       
       - name: 获取每个分支的 Terraform 模块
         id: get-modules
         run: |
-          # 初始化空的JSON对象
-          ALL_MODULES="{}"
+          # 初始化结果变量
+          echo '{"message": "初始化模块映射"}' > /tmp/debug.log
           
-          for branch in $(echo ${{ steps.get-branches.outputs.branches }} | jq -r '.[]'); do
-            echo "检查分支: $branch"
-            git checkout $branch
+          # 确保从新的空白状态开始
+          ALL_MODULES="{}"
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "当前分支: $CURRENT_BRANCH" >> /tmp/debug.log
+          
+          # 检查分支输出是否有效
+          if ! echo "${{ steps.get-branches.outputs.branches }}" | jq empty 2>/dev/null; then
+            echo "警告: 分支格式不正确，使用默认值" >> /tmp/debug.log
+            BRANCH_LIST='["master"]'
+          else
+            BRANCH_LIST="${{ steps.get-branches.outputs.branches }}"
+          fi
+          
+          # 遍历每个分支
+          echo "开始处理分支: $BRANCH_LIST" >> /tmp/debug.log
+          for branch in $(echo "$BRANCH_LIST" | jq -r '.[]'); do
+            echo "检查分支: $branch" | tee -a /tmp/debug.log
             
-            if [ -d "terraform" ]; then
-              # 列出 terraform 目录下的所有子目录并转为单行JSON
-              MODULES=$(find terraform -maxdepth 1 -mindepth 1 -type d | sed 's|terraform/||g' | jq -c -R -s 'split("\n") | map(select(length > 0))')
-              # 将分支和模块添加到结果对象
-              ALL_MODULES=$(echo $ALL_MODULES | jq -c --arg branch "$branch" --argjson modules "$MODULES" '. + {($branch): $modules}')
-              echo "分支 $branch 的模块: $MODULES"
+            # 尝试检出分支
+            if git checkout "$branch" 2>/dev/null; then
+              echo "成功检出分支: $branch" >> /tmp/debug.log
+              
+              if [ -d "terraform" ]; then
+                echo "找到 terraform 目录" >> /tmp/debug.log
+                
+                # 列出模块并构建JSON数组
+                MODULES_RAW=$(find terraform -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sed 's|terraform/||g')
+                if [ -n "$MODULES_RAW" ]; then
+                  MODULES=$(echo "$MODULES_RAW" | jq -R -s 'split("\n") | map(select(length > 0))')
+                  echo "找到模块: $MODULES" >> /tmp/debug.log
+                else
+                  MODULES="[]"
+                  echo "未找到模块" >> /tmp/debug.log
+                fi
+                
+                # 安全地添加到结果对象
+                ALL_MODULES=$(echo "$ALL_MODULES" | jq -c --arg branch "$branch" --argjson modules "$MODULES" '. + {($branch): $modules}')
+                echo "更新后的模块映射: $ALL_MODULES" >> /tmp/debug.log
+              else
+                echo "分支 $branch 中没有 terraform 目录" | tee -a /tmp/debug.log
+                ALL_MODULES=$(echo "$ALL_MODULES" | jq -c --arg branch "$branch" '. + {($branch): []}')
+              fi
             else
-              echo "分支 $branch 中没有 terraform 目录"
-              ALL_MODULES=$(echo $ALL_MODULES | jq -c --arg branch "$branch" '. + {($branch): []}')
+              echo "无法检出分支: $branch - 忽略" | tee -a /tmp/debug.log
             fi
           done
           
-          # 输出紧凑格式的JSON (没有换行和缩进)
+          # 确保输出有效JSON
+          if ! echo "$ALL_MODULES" | jq empty 2>/dev/null; then
+            echo "警告: 输出非有效JSON，使用空对象" | tee -a /tmp/debug.log
+            ALL_MODULES="{}"
+          fi
+          
+          # 恢复原分支
+          git checkout "$CURRENT_BRANCH" || echo "无法恢复原分支 $CURRENT_BRANCH"
+          
+          # 输出结果
           echo "all_modules=$ALL_MODULES" >> $GITHUB_OUTPUT
           echo "所有模块映射: $ALL_MODULES"
+          echo "调试日志:" 
+          cat /tmp/debug.log
       
       - name: 创建配置文件
         run: |
           mkdir -p .github/terraform-modules
-          echo '${{ steps.get-branches.outputs.branches }}' > .github/terraform-modules/branches.json
-          echo '${{ steps.get-modules.outputs.all_modules }}' > .github/terraform-modules/modules.json
+          
+          # 验证分支数据
+          if echo '${{ steps.get-branches.outputs.branches }}' | jq empty 2>/dev/null; then
+            echo '${{ steps.get-branches.outputs.branches }}' > .github/terraform-modules/branches.json
+          else
+            echo "警告: 分支数据无效，使用默认值"
+            echo '["master"]' > .github/terraform-modules/branches.json
+          fi
+          
+          # 验证模块数据
+          if echo '${{ steps.get-modules.outputs.all_modules }}' | jq empty 2>/dev/null; then
+            echo '${{ steps.get-modules.outputs.all_modules }}' > .github/terraform-modules/modules.json
+          else
+            echo "警告: 模块数据无效，使用默认值"
+            echo '{"master":["ec2"]}' > .github/terraform-modules/modules.json
+          fi
           
           # 打印生成的文件内容以便调试
           echo "生成的文件:"
@@ -72,13 +133,13 @@ jobs:
           echo "modules.json:"
           cat .github/terraform-modules/modules.json
           
-          # 将文件转换为更易读的格式 (可选)
+          # 将文件转换为更易读的格式
           echo "将JSON文件格式化为更易读的格式..."
           if command -v jq &> /dev/null; then
             jq . .github/terraform-modules/branches.json > .github/terraform-modules/branches_pretty.json
             jq . .github/terraform-modules/modules.json > .github/terraform-modules/modules_pretty.json
             mv .github/terraform-modules/branches_pretty.json .github/terraform-modules/branches.json
-            mv .github/terraform-modules/modules_pretty.json .github/terraform-modules/modules.json
+            mv .github/terraform-modules/modules_pretty.json .github/terraform-modules/modules.json || echo "格式化失败，保留原始文件"
           fi
       
       - name: 提交更新的模块列表
