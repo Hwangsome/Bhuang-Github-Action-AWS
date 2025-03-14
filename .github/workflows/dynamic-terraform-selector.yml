@@ -1,12 +1,7 @@
-name: 动态 Terraform 模块选择器
-
-# 此工作流分为两部分：
-# 1. 首先获取分支列表和每个分支下的 Terraform 模块列表
-# 2. 然后使用这些信息运行实际的 Terraform 操作
+name: 修复版 Terraform 模块选择器
 
 on:
   workflow_dispatch:
-    # 初始时只提供一个刷新选项
     inputs:
       action:
         description: '操作'
@@ -21,7 +16,6 @@ permissions:
   contents: write
 
 jobs:
-  # 第一个工作流：用于刷新可用的分支和模块列表
   refresh-terraform-modules:
     if: github.event.inputs.action == 'refresh_modules'
     runs-on: ubuntu-latest
@@ -34,30 +28,34 @@ jobs:
       - name: 获取所有分支
         id: get-branches
         run: |
-          BRANCHES=$(git branch -r | grep -v HEAD | sed 's/origin\///g' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          # 获取所有分支并转为单行JSON (没有漂亮格式)
+          BRANCHES=$(git branch -r | grep -v HEAD | sed 's/origin\///g' | tr -d ' ' | jq -c -R -s 'split("\n") | map(select(length > 0))')
           echo "branches=$BRANCHES" >> $GITHUB_OUTPUT
           echo "找到的分支: $BRANCHES"
       
       - name: 获取每个分支的 Terraform 模块
         id: get-modules
         run: |
+          # 初始化空的JSON对象
           ALL_MODULES="{}"
           
-          for branch in $(echo '${{ steps.get-branches.outputs.branches }}' | jq -r '.[]'); do
+          for branch in $(echo ${{ steps.get-branches.outputs.branches }} | jq -r '.[]'); do
             echo "检查分支: $branch"
             git checkout $branch
             
             if [ -d "terraform" ]; then
-              # 列出 terraform 目录下的所有子目录
-              MODULES=$(ls -d terraform/*/ 2>/dev/null | sed 's/terraform\///g' | sed 's/\///g' | jq -R -s -c 'split("\n") | map(select(length > 0))')
-              ALL_MODULES=$(echo $ALL_MODULES | jq --arg branch "$branch" --argjson modules "$MODULES" '. + {($branch): $modules}')
+              # 列出 terraform 目录下的所有子目录并转为单行JSON
+              MODULES=$(find terraform -maxdepth 1 -mindepth 1 -type d | sed 's|terraform/||g' | jq -c -R -s 'split("\n") | map(select(length > 0))')
+              # 将分支和模块添加到结果对象
+              ALL_MODULES=$(echo $ALL_MODULES | jq -c --arg branch "$branch" --argjson modules "$MODULES" '. + {($branch): $modules}')
               echo "分支 $branch 的模块: $MODULES"
             else
               echo "分支 $branch 中没有 terraform 目录"
-              ALL_MODULES=$(echo $ALL_MODULES | jq --arg branch "$branch" '. + {($branch): []}')
+              ALL_MODULES=$(echo $ALL_MODULES | jq -c --arg branch "$branch" '. + {($branch): []}')
             fi
           done
           
+          # 输出紧凑格式的JSON (没有换行和缩进)
           echo "all_modules=$ALL_MODULES" >> $GITHUB_OUTPUT
           echo "所有模块映射: $ALL_MODULES"
       
@@ -66,6 +64,22 @@ jobs:
           mkdir -p .github/terraform-modules
           echo '${{ steps.get-branches.outputs.branches }}' > .github/terraform-modules/branches.json
           echo '${{ steps.get-modules.outputs.all_modules }}' > .github/terraform-modules/modules.json
+          
+          # 打印生成的文件内容以便调试
+          echo "生成的文件:"
+          echo "branches.json:"
+          cat .github/terraform-modules/branches.json
+          echo "modules.json:"
+          cat .github/terraform-modules/modules.json
+          
+          # 将文件转换为更易读的格式 (可选)
+          echo "将JSON文件格式化为更易读的格式..."
+          if command -v jq &> /dev/null; then
+            jq . .github/terraform-modules/branches.json > .github/terraform-modules/branches_pretty.json
+            jq . .github/terraform-modules/modules.json > .github/terraform-modules/modules_pretty.json
+            mv .github/terraform-modules/branches_pretty.json .github/terraform-modules/branches.json
+            mv .github/terraform-modules/modules_pretty.json .github/terraform-modules/modules.json
+          fi
       
       - name: 提交更新的模块列表
         run: |
@@ -75,8 +89,6 @@ jobs:
           git commit -m "更新 Terraform 模块列表" || echo "没有变更需要提交"
           git push
 
-  # 第二个工作流：实际运行 Terraform 操作
-  # 这需要先手动运行第一个工作流来更新模块列表
   terraform-operations:
     if: github.event.inputs.action == 'run_terraform'
     runs-on: ubuntu-latest
@@ -84,37 +96,38 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v3
 
-      - name: 设置工作流输入
-        id: set-matrix
+      - name: 读取模块信息
+        id: read-modules
         run: |
-          # 读取预先生成的分支和模块列表
-          if [ -f .github/terraform-modules/branches.json ]; then
+          if [ -f .github/terraform-modules/branches.json ] && [ -f .github/terraform-modules/modules.json ]; then
+            echo "文件存在，读取数据..."
             BRANCHES=$(cat .github/terraform-modules/branches.json)
-            echo "branches=$BRANCHES" >> $GITHUB_OUTPUT
-          else
-            echo "警告: branches.json 不存在"
-            echo "branches=[\"master\"]" >> $GITHUB_OUTPUT
-          fi
-          
-          if [ -f .github/terraform-modules/modules.json ]; then
             MODULES=$(cat .github/terraform-modules/modules.json)
-            echo "modules=$MODULES" >> $GITHUB_OUTPUT
+            echo "branches=$(echo $BRANCHES | jq -c .)" >> $GITHUB_OUTPUT
+            echo "modules=$(echo $MODULES | jq -c .)" >> $GITHUB_OUTPUT
           else
-            echo "警告: modules.json 不存在"
-            echo "modules={}" >> $GITHUB_OUTPUT
+            echo "错误: 模块信息文件不存在，请先运行 refresh_modules 操作"
+            exit 1
           fi
 
-      - name: 生成并保存分支列表
+      - name: 生成分支选项
+        id: generate-options
         run: |
-          # 保存分支列表为字符串
-          BRANCHES_JSON='${{ steps.set-matrix.outputs.branches }}'
-          echo "BRANCHES_JSON=$BRANCHES_JSON" >> $GITHUB_ENV
+          # 从JSON中提取分支名称并格式化为YAML选项
+          BRANCH_OPTIONS=""
+          for branch in $(echo '${{ steps.read-modules.outputs.branches }}' | jq -r '.[]'); do
+            BRANCH_OPTIONS="${BRANCH_OPTIONS}            - ${branch}\n"
+          done
+          
+          # 将选项保存为环境变量
+          echo "BRANCH_OPTIONS<<EOF" >> $GITHUB_ENV
+          echo -e "$BRANCH_OPTIONS" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
       
-      - name: 生成 Terraform 执行工作流
+      - name: 创建 Terraform 执行工作流
         run: |
           mkdir -p .github/workflows
           
-          # 使用双引号 EOL 允许变量替换
           cat > .github/workflows/terraform-executor.yml << EOL
           name: Terraform 执行器
           
@@ -125,11 +138,28 @@ jobs:
                   description: '选择分支'
                   required: true
                   type: choice
-                  options: ${BRANCHES_JSON}
+                  options:
+          $BRANCH_OPTIONS
                 terraform_module:
                   description: '选择 Terraform 模块'
                   required: true
                   type: string
+                environment:
+                  description: '选择环境'
+                  required: true
+                  type: choice
+                  options:
+                    - dev
+                    - test
+                    - prod
+                action:
+                  description: '执行操作'
+                  required: true
+                  type: choice
+                  options:
+                    - plan
+                    - apply
+                    - destroy
           
           jobs:
             terraform-plan:
@@ -152,7 +182,22 @@ jobs:
                   run: |
                     cd terraform/\${{ github.event.inputs.terraform_module }}
                     terraform plan -out=tfplan
+                
+                - name: Terraform 应用
+                  if: github.event.inputs.action == 'apply'
+                  run: |
+                    cd terraform/\${{ github.event.inputs.terraform_module }}
+                    terraform apply -auto-approve tfplan
+                
+                - name: Terraform 销毁
+                  if: github.event.inputs.action == 'destroy'
+                  run: |
+                    cd terraform/\${{ github.event.inputs.terraform_module }}
+                    terraform destroy -auto-approve
           EOL
+          
+          echo "工作流文件已创建: .github/workflows/terraform-executor.yml"
+          cat .github/workflows/terraform-executor.yml
           
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
