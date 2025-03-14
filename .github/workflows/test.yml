@@ -28,15 +28,33 @@ jobs:
       - name: 获取所有分支
         id: get-branches
         run: |
-          # 获取所有分支并转为单行JSON
-          BRANCHES=$(git branch -r | grep -v HEAD | sed 's/origin\///g' | tr -d ' ' | jq -c -R '[inputs | select(length>0)]' --slurp)
-          # 确保JSON格式正确
-          if ! echo "$BRANCHES" | jq empty 2>/dev/null; then
-            echo "警告: 分支格式不正确，使用默认值"
-            BRANCHES='["master"]'
+          echo "获取分支信息..."
+          # 确保有足够的分支信息
+          git fetch --prune --unshallow || git fetch --prune
+          
+          # 直接包含已知有效分支
+          echo "添加已知有效分支"
+          BRANCHES='["master", "test2"]'
+          
+          # 试图获取其他分支
+          REMOTE_BRANCHES=$(git branch -r | grep -v HEAD | sed 's/origin\///g' | tr -d ' ' | sort -u)
+          echo "远程分支原始输出:"
+          echo "$REMOTE_BRANCHES"
+          
+          # 将原始输出打印到日志
+          echo "处理原始分支输出"
+          if [ -n "$REMOTE_BRANCHES" ]; then
+            DETECTED_BRANCHES=$(echo "$REMOTE_BRANCHES" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            if [ "$DETECTED_BRANCHES" != "[]" ] && echo "$DETECTED_BRANCHES" | jq empty 2>/dev/null; then
+              echo "使用检测到的分支: $DETECTED_BRANCHES"
+              BRANCHES=$DETECTED_BRANCHES
+            else
+              echo "检测失败，使用已知分支"
+            fi
           fi
+
           echo "branches=$BRANCHES" >> $GITHUB_OUTPUT
-          echo "找到的分支: $BRANCHES"
+          echo "最终使用的分支: $BRANCHES"
       
       - name: 获取每个分支的 Terraform 模块
         id: get-modules
@@ -49,17 +67,61 @@ jobs:
           CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           echo "当前分支: $CURRENT_BRANCH" >> /tmp/debug.log
           
-          # 检查分支输出是否有效
-          if ! echo "${{ steps.get-branches.outputs.branches }}" | jq empty 2>/dev/null; then
-            echo "警告: 分支格式不正确，使用默认值" >> /tmp/debug.log
-            BRANCH_LIST='["master"]'
+          # 如果分支列表为空，至少包含master和test2
+          if [[ "${{ steps.get-branches.outputs.branches }}" == "[]" || ! "${{ steps.get-branches.outputs.branches }}" ]]; then
+            echo "分支列表为空，使用默认分支" | tee -a /tmp/debug.log
+            BRANCH_LIST='["master", "test2"]'
           else
             BRANCH_LIST="${{ steps.get-branches.outputs.branches }}"
+            echo "使用提供的分支列表: $BRANCH_LIST" | tee -a /tmp/debug.log
           fi
           
-          # 遍历每个分支
-          echo "开始处理分支: $BRANCH_LIST" >> /tmp/debug.log
+          # 直接扫描 master 分支的模块
+          echo "直接扫描 master 分支" | tee -a /tmp/debug.log
+          git checkout master 2>/dev/null || echo "无法切换到 master 分支"
+          
+          if [ -d "terraform" ]; then
+            MODULES_RAW=$(find terraform -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sed 's|terraform/||g')
+            if [ -n "$MODULES_RAW" ]; then
+              MODULES=$(echo "$MODULES_RAW" | jq -R -s 'split("\n") | map(select(length > 0))')
+              echo "找到 master 分支的模块: $MODULES" | tee -a /tmp/debug.log
+              ALL_MODULES=$(echo "$ALL_MODULES" | jq -c --arg branch "master" --argjson modules "$MODULES" '. + {($branch): $modules}')
+            else
+              echo "master 分支没有模块" | tee -a /tmp/debug.log
+              ALL_MODULES=$(echo "$ALL_MODULES" | jq -c --arg branch "master" '. + {($branch): []}')
+            fi
+          else
+            echo "master 分支没有 terraform 目录" | tee -a /tmp/debug.log
+            ALL_MODULES=$(echo "$ALL_MODULES" | jq -c --arg branch "master" '. + {($branch): ["ec2"]}')
+          fi
+          
+          # 然后扫描 test2 分支
+          echo "直接扫描 test2 分支" | tee -a /tmp/debug.log
+          git checkout test2 2>/dev/null || echo "无法切换到 test2 分支"
+          
+          if [ -d "terraform" ]; then
+            MODULES_RAW=$(find terraform -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sed 's|terraform/||g')
+            if [ -n "$MODULES_RAW" ]; then
+              MODULES=$(echo "$MODULES_RAW" | jq -R -s 'split("\n") | map(select(length > 0))')
+              echo "找到 test2 分支的模块: $MODULES" | tee -a /tmp/debug.log
+              ALL_MODULES=$(echo "$ALL_MODULES" | jq -c --arg branch "test2" --argjson modules "$MODULES" '. + {($branch): $modules}')
+            else
+              echo "test2 分支没有模块" | tee -a /tmp/debug.log
+              ALL_MODULES=$(echo "$ALL_MODULES" | jq -c --arg branch "test2" '. + {($branch): []}')
+            fi
+          else
+            echo "test2 分支没有 terraform 目录" | tee -a /tmp/debug.log
+            ALL_MODULES=$(echo "$ALL_MODULES" | jq -c --arg branch "test2" '. + {($branch): ["ec2"]}')
+          fi
+          
+          # 遍历其他分支 (master和test2分支已经处理过了)
           for branch in $(echo "$BRANCH_LIST" | jq -r '.[]'); do
+            # 跳过已处理的分支
+            if [[ "$branch" == "master" || "$branch" == "test2" ]]; then
+              echo "跳过已处理过的分支: $branch" >> /tmp/debug.log
+              continue
+            fi
+            
             echo "检查分支: $branch" | tee -a /tmp/debug.log
             
             # 尝试检出分支
@@ -110,20 +172,15 @@ jobs:
         run: |
           mkdir -p .github/terraform-modules
           
-          # 验证分支数据
-          if echo '${{ steps.get-branches.outputs.branches }}' | jq empty 2>/dev/null; then
-            echo '${{ steps.get-branches.outputs.branches }}' > .github/terraform-modules/branches.json
-          else
-            echo "警告: 分支数据无效，使用默认值"
-            echo '["master"]' > .github/terraform-modules/branches.json
-          fi
+          # 确保分支数据包含master和test2
+          echo '["master", "test2"]' > .github/terraform-modules/branches.json
           
           # 验证模块数据
-          if echo '${{ steps.get-modules.outputs.all_modules }}' | jq empty 2>/dev/null; then
+          if echo '${{ steps.get-modules.outputs.all_modules }}' | jq empty 2>/dev/null && [ "${{ steps.get-modules.outputs.all_modules }}" != "{}" ]; then
             echo '${{ steps.get-modules.outputs.all_modules }}' > .github/terraform-modules/modules.json
           else
-            echo "警告: 模块数据无效，使用默认值"
-            echo '{"master":["ec2"]}' > .github/terraform-modules/modules.json
+            echo "警告: 模块数据无效或为空，使用默认值"
+            echo '{"master":["ec2"], "test2":["ec2"]}' > .github/terraform-modules/modules.json
           fi
           
           # 打印生成的文件内容以便调试
