@@ -159,15 +159,28 @@ jobs:
           
           echo "Updated terraform-manual.yml with new Terraform directory options"
           
-          # 注意: 因为安全限制，工作流不能直接更新工作流文件
-          # 创建一个新分支来存储更改
-          NEW_BRANCH="terraform-options-update-$(date +%s)"
-          git checkout -b $NEW_BRANCH
+          # GitHub安全限制不允许我们直接更新工作流文件
+          # 所以我们生成更新内容并显示在日志中，由用户手动更新
           
-          # 提交更改到新分支
-          git add .github/workflows/terraform-manual.yml
-          git commit -m "[Automated] Update Terraform directory options in workflow"
-          git push origin $NEW_BRANCH
+          # 生成详细的更新信息
+          echo ""
+          echo "====================== MANUAL UPDATE REQUIRED ======================" 
+          echo "❗ GitHub限制不允许工作流自动更新工作流文件。请手动更新以下内容:" 
+          echo ""
+          echo "文件: .github/workflows/terraform-manual.yml"
+          echo "请将文件中的 target_directory 部分替换为以下内容:"
+          echo "---"
+          echo -e "$NEW_INPUT"
+          echo "---"
+          echo ""
+          echo "手动更新步骤:"
+          echo "1. 编辑 .github/workflows/terraform-manual.yml 文件"
+          echo "2. 查找当前的 target_directory 部分"
+          echo "3. 替换成上面的内容"
+          echo "4. 提交并推送到你的分支"
+          echo "=================================================================="
+          echo ""
           
-          echo "✅ 提交了更新到新分支: $NEW_BRANCH"
-          echo "请从该分支创建 PR 到 $TARGET_BRANCH 来完成工作流更新"
+          # 将更新内容保存到文件中，便于用户复制
+          echo -e "$NEW_INPUT" > terraform_options_update.txt
+          echo "\n\n✅ 已将更新内容保存到 terraform_options_update.txt 文件中供您使用"
