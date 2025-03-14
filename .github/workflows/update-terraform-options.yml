@@ -21,6 +21,8 @@ jobs:
   update_options:
     name: 'Update Terraform Options'
     runs-on: ubuntu-latest
+    env:
+      PAT_GITHUB: ${{ secrets.PAT_GITHUB }} # 使用GitHub个人访问令牌自动更新工作流文件
     
     steps:
       - name: Checkout Repository
@@ -159,28 +161,40 @@ jobs:
           
           echo "Updated terraform-manual.yml with new Terraform directory options"
           
-          # GitHub安全限制不允许我们直接更新工作流文件
-          # 所以我们生成更新内容并显示在日志中，由用户手动更新
+          # 使用个人访问令牌(PAT)更新工作流文件
+          # 注意: 这需要在GitHub仓库中设置一个名为 PAT_GITHUB 的密钥
+          if [ -z "$PAT_GITHUB" ]; then
+            echo "❗ 错误: 没有找到PAT_GITHUB密钥。请在仓库设置中添加该密钥。"
+            
+            # 在密钥不存在的情况下，将内容输出也保存下来
+            echo ""
+            echo "====================== 手动更新需要 ======================" 
+            echo "文件: .github/workflows/terraform-manual.yml"
+            echo "请将文件中的 target_directory 部分替换为以下内容:"
+            echo "---"
+            echo -e "$NEW_INPUT"
+            echo "---"
+            echo "=================================================================="
+            
+            echo -e "$NEW_INPUT" > terraform_options_update.txt
+            echo "✅ 已将更新内容保存到 terraform_options_update.txt 文件中供您手动更新"
+            exit 1
+          fi
           
-          # 生成详细的更新信息
-          echo ""
-          echo "====================== MANUAL UPDATE REQUIRED ======================" 
-          echo "❗ GitHub限制不允许工作流自动更新工作流文件。请手动更新以下内容:" 
-          echo ""
-          echo "文件: .github/workflows/terraform-manual.yml"
-          echo "请将文件中的 target_directory 部分替换为以下内容:"
-          echo "---"
-          echo -e "$NEW_INPUT"
-          echo "---"
-          echo ""
-          echo "手动更新步骤:"
-          echo "1. 编辑 .github/workflows/terraform-manual.yml 文件"
-          echo "2. 查找当前的 target_directory 部分"
-          echo "3. 替换成上面的内容"
-          echo "4. 提交并推送到你的分支"
-          echo "=================================================================="
-          echo ""
+          # 设置使用PAT的git揘送URL
+          REPO_URL="https://$PAT_GITHUB@github.com/${GITHUB_REPOSITORY}.git"
           
-          # 将更新内容保存到文件中，便于用户复制
-          echo -e "$NEW_INPUT" > terraform_options_update.txt
-          echo "\n\n✅ 已将更新内容保存到 terraform_options_update.txt 文件中供您使用"
+          # 新的git配置
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          
+          # 提交更改
+          git add .github/workflows/terraform-manual.yml
+          git commit -m "[Automated] Update Terraform directory options in workflow"
+          
+          # 使用PAT推送更改（可以绕过GitHub Actions的限制）
+          echo "尝试使用PAT推送更改..."
+          git remote set-url origin "$REPO_URL"
+          git push origin $TARGET_BRANCH
+          
+          echo "✅ 成功更新了 $TARGET_BRANCH 分支上的 terraform-manual.yml 文件中的Terraform目录选项"
