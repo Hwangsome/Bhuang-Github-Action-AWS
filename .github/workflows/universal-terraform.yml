@@ -3,8 +3,8 @@ name: 'Universal Terraform Workflow'
 on:
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'Branch to use'
+      workflow_from:
+        description: 'Use workflow from'
         required: true
         type: choice
         options:
@@ -46,7 +46,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.branch }}
+          ref: ${{ github.event.inputs.workflow_from }}
       
       - name: Debug - List Repository Structure
         run: |
@@ -94,7 +94,7 @@ jobs:
       - name: Read Module Configuration
         id: read_modules
         run: |
-          BRANCH="${{ github.event.inputs.branch }}"
+          BRANCH="${{ github.event.inputs.workflow_from }}"
           echo "Reading modules for branch: $BRANCH"
           
           if [ -f ".github/terraform-modules/modules.json" ]; then
@@ -150,7 +150,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.branch }}
+          ref: ${{ github.event.inputs.workflow_from }}
           
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
