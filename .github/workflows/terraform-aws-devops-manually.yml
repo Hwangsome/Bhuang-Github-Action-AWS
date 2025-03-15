@@ -1,15 +1,15 @@
-name: 'Universal Terraform Workflow'
+name: 'Terraform awsDevops'
 
 on:
   workflow_dispatch:
     inputs:
       workflow_from:
-        description: 'Enter branch name to use (e.g., master, test3)'
+        description: 'Enter branch name to use'
         required: true
         type: string
         default: 'master'
       terraform_directory:
-        description: 'Enter Terraform directory path (e.g., terraform/ec2, terraform/aws-glue)'
+        description: 'Enter Terraform directory path (free text input)'
         required: true
         type: string
         default: 'terraform/ec2'
@@ -31,47 +31,8 @@ env:
   AWS_REGION: 'us-west-2'
 
 jobs:
-  load_options:
-    name: 'Load Directory Options'
-    runs-on: ubuntu-latest
-    outputs:
-      terraform_directory: ${{ github.event.inputs.terraform_directory }}
-      current_branch: ${{ steps.get_branch.outputs.branch_name }}
-      
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.workflow_from }}
-          fetch-depth: 0 # 获取完整的git历史以访问分支信息
-      
-      - name: Get Current Branch
-        id: get_branch
-        run: |
-          # 使用用户输入的分支
-          BRANCH_NAME="${{ github.event.inputs.workflow_from }}"
-          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
-          echo "Using workflow from branch: $BRANCH_NAME"
-      
-      - name: Debug - List Repository Structure
-        run: |
-          echo "Current directory: $(pwd)"
-          echo "Repository root contents:"
-          ls -la
-          
-          # 检查用户指定的目录
-          DIR="${{ github.event.inputs.terraform_directory }}"
-          echo "Checking specified directory: $DIR"
-          if [ -d "$DIR" ]; then
-            echo "Directory exists! Contents:"
-            ls -la "$DIR" || echo "Cannot list directory contents"
-          else
-            echo "Directory does not exist yet, it will be created during workflow execution"
-          fi
-          
   terraform_run:
     name: 'Terraform ${{ github.event.inputs.action }}'
-    needs: load_options
     runs-on: ubuntu-latest
     
     steps:
@@ -80,10 +41,10 @@ jobs:
         with:
           ref: ${{ github.event.inputs.workflow_from }}
           
-      - name: Show Working Branch
+      - name: Show Working Parameters
         run: |
-          echo "Running Terraform workflow on branch: ${{ needs.load_options.outputs.current_branch }}"
-          echo "Using Terraform directory: ${{ needs.load_options.outputs.terraform_directory }}"
+          echo "Running Terraform workflow on branch: ${{ github.event.inputs.workflow_from }}"
+          echo "Using Terraform directory: ${{ github.event.inputs.terraform_directory }}"
           
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -98,50 +59,31 @@ jobs:
       
       - name: Check Directory Existence
         run: |
-          TERRAFORM_DIR="${{ needs.load_options.outputs.terraform_directory }}"
+          TERRAFORM_DIR="${{ github.event.inputs.terraform_directory }}"
           if [ -d "$TERRAFORM_DIR" ]; then
             echo "Directory $TERRAFORM_DIR exists"
           else
             echo "Directory $TERRAFORM_DIR does not exist"
             echo "Creating directory..."
             mkdir -p "$TERRAFORM_DIR"
-            
-            # 检查是否是自定义目录路径，如果是则跳过创建模板文件
-            if [[ "$TERRAFORM_DIR" == "terraform/ec2" ]]; then
-              # 只为默认目录创建模板文件
-              echo 'provider "aws" {
-                region = "us-west-2"
-              }
-              
-              # 占位资源
-              resource "aws_s3_bucket" "example" {
-                bucket_prefix = "example-bucket-"
-                tags = {
-                  Environment = "Dev"
-                  Created     = "Terraform"
-                }
-              }' > "$TERRAFORM_DIR/main.tf"
-              echo "Created basic Terraform configuration"
-            else
-              echo "Custom directory specified, skipping template creation"
-            fi
+            echo "Directory created"
           fi
           
       - name: Terraform Format
         id: fmt
         run: terraform fmt -check
-        working-directory: ${{ needs.load_options.outputs.terraform_directory }}
+        working-directory: ${{ github.event.inputs.terraform_directory }}
         continue-on-error: true
         
       - name: Terraform Init
         id: init
         run: terraform init
-        working-directory: ${{ needs.load_options.outputs.terraform_directory }}
+        working-directory: ${{ github.event.inputs.terraform_directory }}
         
       - name: Terraform Validate
         id: validate
         run: terraform validate
-        working-directory: ${{ needs.load_options.outputs.terraform_directory }}
+        working-directory: ${{ github.event.inputs.terraform_directory }}
         
       - name: Terraform Plan
         id: plan
@@ -152,20 +94,20 @@ jobs:
           echo 'PLAN<<EOF' >> $GITHUB_OUTPUT
           terraform show -no-color tfplan >> $GITHUB_OUTPUT
           echo 'EOF' >> $GITHUB_OUTPUT
-        working-directory: ${{ needs.load_options.outputs.terraform_directory }}
+        working-directory: ${{ github.event.inputs.terraform_directory }}
         
       - name: Terraform Apply
         id: apply
         if: github.event.inputs.action == 'apply'
         run: terraform apply -auto-approve tfplan
-        working-directory: ${{ needs.load_options.outputs.terraform_directory }}
+        working-directory: ${{ github.event.inputs.terraform_directory }}
         
       - name: Generate Summary
         id: summary
         run: |
           echo "### Terraform Results" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ needs.load_options.outputs.current_branch }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Directory:** ${{ needs.load_options.outputs.terraform_directory }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.event.inputs.workflow_from }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Directory:** ${{ github.event.inputs.terraform_directory }}" >> $GITHUB_STEP_SUMMARY
           echo "**Action:** ${{ github.event.inputs.action }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "#### Status" >> $GITHUB_STEP_SUMMARY
@@ -193,4 +135,4 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "</details>" >> $GITHUB_STEP_SUMMARY
           fi
-        working-directory: ${{ needs.load_options.outputs.terraform_directory }}
+        working-directory: ${{ github.event.inputs.terraform_directory }}
