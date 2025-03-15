@@ -4,11 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       terraform_directory:
-        description: 'Select Terraform directory (auto-updated)'
+        description: 'Enter Terraform directory path (e.g., terraform/ec2, terraform/aws-glue)'
         required: true
-        type: choice
-        options:
-          - terraform/ec2
+        type: string
         default: 'terraform/ec2'
       action:
         description: 'Terraform action to perform'
