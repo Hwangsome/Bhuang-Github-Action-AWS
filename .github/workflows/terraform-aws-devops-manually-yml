@@ -1,0 +1,138 @@
+name: 'Terraform awsDevops'
+
+on:
+  workflow_dispatch:
+    inputs:
+      workflow_from:
+        description: 'Enter branch name to use'
+        required: true
+        type: string
+        default: 'master'
+      terraform_directory:
+        description: 'Enter Terraform directory path (free text input)'
+        required: true
+        type: string
+        default: 'terraform/ec2'
+      action:
+        description: 'Terraform action to perform'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+        default: 'plan'
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+env:
+  AWS_REGION: 'us-west-2'
+
+jobs:
+  terraform_run:
+    name: 'Terraform ${{ github.event.inputs.action }}'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.workflow_from }}
+          
+      - name: Show Working Parameters
+        run: |
+          echo "Running Terraform workflow on branch: ${{ github.event.inputs.workflow_from }}"
+          echo "Using Terraform directory: ${{ github.event.inputs.terraform_directory }}"
+          
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+      
+      - name: Check Directory Existence
+        run: |
+          TERRAFORM_DIR="${{ github.event.inputs.terraform_directory }}"
+          if [ -d "$TERRAFORM_DIR" ]; then
+            echo "Directory $TERRAFORM_DIR exists"
+          else
+            echo "Directory $TERRAFORM_DIR does not exist"
+            echo "Creating directory..."
+            mkdir -p "$TERRAFORM_DIR"
+            echo "Directory created"
+          fi
+          
+      - name: Terraform Format
+        id: fmt
+        run: terraform fmt -check
+        working-directory: ${{ github.event.inputs.terraform_directory }}
+        continue-on-error: true
+        
+      - name: Terraform Init
+        id: init
+        run: terraform init
+        working-directory: ${{ github.event.inputs.terraform_directory }}
+        
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+        working-directory: ${{ github.event.inputs.terraform_directory }}
+        
+      - name: Terraform Plan
+        id: plan
+        if: github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
+        run: |
+          terraform plan -no-color -out=tfplan
+          terraform show -json tfplan > plan.json
+          echo 'PLAN<<EOF' >> $GITHUB_OUTPUT
+          terraform show -no-color tfplan >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+        working-directory: ${{ github.event.inputs.terraform_directory }}
+        
+      - name: Terraform Apply
+        id: apply
+        if: github.event.inputs.action == 'apply'
+        run: terraform apply -auto-approve tfplan
+        working-directory: ${{ github.event.inputs.terraform_directory }}
+        
+      - name: Generate Summary
+        id: summary
+        run: |
+          echo "### Terraform Results" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.event.inputs.workflow_from }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Directory:** ${{ github.event.inputs.terraform_directory }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** ${{ github.event.inputs.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Status" >> $GITHUB_STEP_SUMMARY
+          echo "* Format and Style 🖌 \`${{ steps.fmt.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "* Initialization ⚙️ \`${{ steps.init.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "* Validation 🤖 \`${{ steps.validate.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ github.event.inputs.action }}" == "plan" ] || [ "${{ github.event.inputs.action }}" == "apply" ]; then
+            echo "* Plan 📖 \`${{ steps.plan.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ github.event.inputs.action }}" == "apply" ]; then
+            echo "* Apply 🚀 \`${{ steps.apply.outcome }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f plan.json ]; then
+            echo "#### Resource Changes" >> $GITHUB_STEP_SUMMARY
+            echo "<details><summary>Show Changes</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Resource | Action | Type |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|--------|------|" >> $GITHUB_STEP_SUMMARY
+            jq -r '.resource_changes[]? | "| " + .address + " | " + (.change.actions | join(", ")) + " | " + .type + " |"' plan.json >> $GITHUB_STEP_SUMMARY || echo "| No changes | - | - |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          fi
+        working-directory: ${{ github.event.inputs.terraform_directory }}
