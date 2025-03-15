@@ -3,6 +3,11 @@ name: 'Universal Terraform Workflow'
 on:
   workflow_dispatch:
     inputs:
+      workflow_from:
+        description: 'Enter branch name to use (e.g., master, test3)'
+        required: true
+        type: string
+        default: 'master'
       terraform_directory:
         description: 'Enter Terraform directory path (e.g., terraform/ec2, terraform/aws-glue)'
         required: true
