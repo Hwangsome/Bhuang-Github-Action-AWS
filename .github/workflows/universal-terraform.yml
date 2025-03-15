@@ -126,20 +126,19 @@ jobs:
       - name: Set Directory Based on Configuration
         id: set_directory
         run: |
-          # Use the selected directory if it's in the list of available modules, otherwise use the default
+          # 直接使用用户输入的目录路径，不再检查是否在可用模块列表中
           SELECTED_DIR="${{ github.event.inputs.terraform_directory }}"
-          AVAILABLE_MODULES="${{ steps.read_modules.outputs.modules }}"
-          DEFAULT_MODULE="${{ steps.read_modules.outputs.default_module }}"
           
-          if [[ "$AVAILABLE_MODULES" == *"$SELECTED_DIR"* ]]; then
-            echo "Using selected directory: $SELECTED_DIR"
-            FINAL_DIR="$SELECTED_DIR"
+          echo "Using user specified directory: $SELECTED_DIR"
+          
+          # 检查目录是否存在，但不影响选择结果
+          if [ -d "$SELECTED_DIR" ]; then
+            echo "Directory $SELECTED_DIR exists in the repository"
           else
-            echo "Selected directory not available for this branch, using default: $DEFAULT_MODULE"
-            FINAL_DIR="$DEFAULT_MODULE"
+            echo "Note: Directory $SELECTED_DIR does not exist yet, it will be created if needed"
           fi
           
-          echo "terraform_directory=$FINAL_DIR" >> $GITHUB_OUTPUT
+          echo "terraform_directory=$SELECTED_DIR" >> $GITHUB_OUTPUT
           
   terraform_run:
     name: 'Terraform ${{ github.event.inputs.action }}'
@@ -170,28 +169,33 @@ jobs:
       
       - name: Check Directory Existence
         run: |
-          if [ -d "${{ needs.load_options.outputs.terraform_directory }}" ]; then
-            echo "Directory ${{ needs.load_options.outputs.terraform_directory }} exists"
+          TERRAFORM_DIR="${{ needs.load_options.outputs.terraform_directory }}"
+          if [ -d "$TERRAFORM_DIR" ]; then
+            echo "Directory $TERRAFORM_DIR exists"
           else
-            echo "Directory ${{ needs.load_options.outputs.terraform_directory }} does not exist"
+            echo "Directory $TERRAFORM_DIR does not exist"
             echo "Creating directory..."
-            mkdir -p "${{ needs.load_options.outputs.terraform_directory }}"
+            mkdir -p "$TERRAFORM_DIR"
             
-            # 创建一个基本的 Terraform 文件
-            echo 'provider "aws" {
-              region = "us-west-2"
-            }
-            
-            # 占位资源
-            resource "aws_s3_bucket" "example" {
-              bucket_prefix = "example-bucket-"
-              tags = {
-                Environment = "Dev"
-                Created     = "Terraform"
+            # 检查是否是自定义目录路径，如果是则跳过创建模板文件
+            if [[ "$TERRAFORM_DIR" == "terraform/ec2" ]]; then
+              # 只为默认目录创建模板文件
+              echo 'provider "aws" {
+                region = "us-west-2"
               }
-            }' > "${{ needs.load_options.outputs.terraform_directory }}/main.tf"
-            
-            echo "Created basic Terraform configuration"
+              
+              # 占位资源
+              resource "aws_s3_bucket" "example" {
+                bucket_prefix = "example-bucket-"
+                tags = {
+                  Environment = "Dev"
+                  Created     = "Terraform"
+                }
+              }' > "$TERRAFORM_DIR/main.tf"
+              echo "Created basic Terraform configuration"
+            else
+              echo "Custom directory specified, skipping template creation"
+            fi
           fi
           
       - name: Terraform Format
