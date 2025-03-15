@@ -35,7 +35,7 @@ jobs:
     name: 'Load Directory Options'
     runs-on: ubuntu-latest
     outputs:
-      terraform_directory: ${{ steps.set_directory.outputs.terraform_directory }}
+      terraform_directory: ${{ github.event.inputs.terraform_directory }}
       current_branch: ${{ steps.get_branch.outputs.branch_name }}
       
     steps:
@@ -48,7 +48,7 @@ jobs:
       - name: Get Current Branch
         id: get_branch
         run: |
-          # 使用选定的工作流分支
+          # 使用用户输入的分支
           BRANCH_NAME="${{ github.event.inputs.workflow_from }}"
           echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
           echo "Using workflow from branch: $BRANCH_NAME"
@@ -59,91 +59,15 @@ jobs:
           echo "Repository root contents:"
           ls -la
           
-          echo "Checking .github directory:"
-          ls -la .github || echo ".github directory not found"
-          
-          echo "Checking terraform-modules directory:"
-          ls -la .github/terraform-modules || echo ".github/terraform-modules directory not found"
-          
-          echo "Checking for modules.json:"
-          if [ -f ".github/terraform-modules/modules.json" ]; then
-            echo "modules.json content:"
-            cat .github/terraform-modules/modules.json
+          # 检查用户指定的目录
+          DIR="${{ github.event.inputs.terraform_directory }}"
+          echo "Checking specified directory: $DIR"
+          if [ -d "$DIR" ]; then
+            echo "Directory exists! Contents:"
+            ls -la "$DIR" || echo "Cannot list directory contents"
           else
-            echo "modules.json file not found"
+            echo "Directory does not exist yet, it will be created during workflow execution"
           fi
-          
-      - name: Ensure Required Directories Exist
-        run: |
-          mkdir -p .github/terraform-modules
-          
-          # 如果modules.json不存在，创建一个默认的
-          if [ ! -f ".github/terraform-modules/modules.json" ]; then
-            echo "Creating default modules.json file"
-            echo '{
-              "master": ["ec2"],
-              "test2": ["ec2"]
-            }' > .github/terraform-modules/modules.json
-            cat .github/terraform-modules/modules.json
-          fi
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '16'
-      
-      - name: Install Dependencies
-        run: |
-          npm install @actions/core js-yaml
-      
-      - name: Read Module Configuration
-        id: read_modules
-        run: |
-          BRANCH="${{ steps.get_branch.outputs.branch_name }}"
-          echo "Reading modules for branch: $BRANCH"
-          
-          if [ -f ".github/terraform-modules/modules.json" ]; then
-            # Extract modules for the current branch
-            MODULES=$(node -e "
-              const fs = require('fs');
-              const data = JSON.parse(fs.readFileSync('.github/terraform-modules/modules.json', 'utf8'));
-              const branch = '$BRANCH';
-              if (data[branch]) {
-                console.log(data[branch].map(m => 'terraform/' + m).join('\n'));
-              } else {
-                console.log('terraform/ec2');
-              }
-            ")
-            echo "Found modules for branch $BRANCH: $MODULES"
-          else
-            echo "modules.json not found, using default module"
-            MODULES="terraform/ec2"
-          fi
-          
-          echo "modules<<EOF" >> $GITHUB_OUTPUT
-          echo "$MODULES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          
-          # Get first module as default
-          DEFAULT_MODULE=$(echo "$MODULES" | head -n 1)
-          echo "default_module=$DEFAULT_MODULE" >> $GITHUB_OUTPUT
-      
-      - name: Set Directory Based on Configuration
-        id: set_directory
-        run: |
-          # 直接使用用户输入的目录路径，不再检查是否在可用模块列表中
-          SELECTED_DIR="${{ github.event.inputs.terraform_directory }}"
-          
-          echo "Using user specified directory: $SELECTED_DIR"
-          
-          # 检查目录是否存在，但不影响选择结果
-          if [ -d "$SELECTED_DIR" ]; then
-            echo "Directory $SELECTED_DIR exists in the repository"
-          else
-            echo "Note: Directory $SELECTED_DIR does not exist yet, it will be created if needed"
-          fi
-          
-          echo "terraform_directory=$SELECTED_DIR" >> $GITHUB_OUTPUT
           
   terraform_run:
     name: 'Terraform ${{ github.event.inputs.action }}'
