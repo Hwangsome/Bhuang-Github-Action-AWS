@@ -1,5 +1,9 @@
 {
-  "master": [
+  "aws-glue": [
+    "aws-glue"
+    ,"ec2"
+  ]
+  ,"master": [
     "ec2"
   ]
   ,"test-feature": [
