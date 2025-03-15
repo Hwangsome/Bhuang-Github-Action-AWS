@@ -1,6 +1,6 @@
 module "glue" {
   source  = "cloudposse/glue/aws"
-  version = "0.15.0"
+  version = "0.4.0"
 
   namespace                  = var.namespace
   stage                      = var.stage
