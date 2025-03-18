@@ -1,0 +1,95 @@
+name: Dynamic Module Selection Based on Branches
+
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: '要运行的模块名称'
+        required: true
+        type: string
+      branch:
+        description: '分支名称（可选，默认使用当前分支）'
+        required: false
+        default: 'master'
+
+jobs:
+  dynamic_modules:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Get all branches in the repository
+      id: get_branches
+      run: |
+        # Get a list of all branches in the repository
+        BRANCHES=$(git branch -r | grep -v '\->' | sed 's/origin\///')
+        
+        # Output the list of branches
+        echo "Branches found: $BRANCHES"
+        
+        # Set the branches as output for the next step
+        echo "::set-output name=branches::$BRANCHES"
+
+    - name: Validate module from input
+      id: validate_module
+      run: |
+        # 获取输入的模块和分支
+        INPUT_MODULE="${{ github.event.inputs.module }}"
+        INPUT_BRANCH="${{ github.event.inputs.branch }}"
+        echo "选择的模块: $INPUT_MODULE"
+        echo "选择的分支: $INPUT_BRANCH"
+        
+        # 验证模块是否存在于modules.json中的指定分支
+        MODULE_EXISTS=$(jq -r --arg branch "$INPUT_BRANCH" --arg module "$INPUT_MODULE" '.[$branch] | contains(["$module"])' .github/terraform-modules/modules.json)
+        
+        if [ "$MODULE_EXISTS" = "true" ]; then
+          echo "✅ 模块 '$INPUT_MODULE' 在分支 '$INPUT_BRANCH' 中找到"
+          echo "::set-output name=valid::true"
+        else
+          # 如果在指定分支中没找到，检查其他分支
+          OTHER_BRANCHES=$(jq -r 'keys[]' .github/terraform-modules/modules.json | grep -v "$INPUT_BRANCH")
+          
+          FOUND_IN_OTHER_BRANCH="false"
+          FOUND_BRANCHES=""
+          
+          for BRANCH in $OTHER_BRANCHES; do
+            BRANCH_HAS_MODULE=$(jq -r --arg branch "$BRANCH" --arg module "$INPUT_MODULE" '.[$branch] | contains(["$module"])' .github/terraform-modules/modules.json)
+            
+            if [ "$BRANCH_HAS_MODULE" = "true" ]; then
+              FOUND_IN_OTHER_BRANCH="true"
+              FOUND_BRANCHES="$FOUND_BRANCHES $BRANCH"
+            fi
+          done
+          
+          if [ "$FOUND_IN_OTHER_BRANCH" = "true" ]; then
+            echo "⚠️ 模块 '$INPUT_MODULE' 不在指定的分支 '$INPUT_BRANCH' 中，但在以下分支中找到:$FOUND_BRANCHES"
+          else
+            echo "❌ 错误: 模块 '$INPUT_MODULE' 在任何分支中都不存在"
+            exit 1
+          fi
+          
+          echo "::set-output name=valid::false"
+        fi
+
+    - name: Process selected module
+      if: steps.validate_module.outputs.valid == 'true'
+      run: |
+        MODULE="${{ github.event.inputs.module }}"
+        BRANCH="${{ github.event.inputs.branch }}"
+        
+        echo "正在处理模块: $MODULE (从分支 '$BRANCH')"
+        
+        # 根据不同的模块执行相应的操作
+        if [ "$MODULE" = "ec2" ]; then
+          echo "执行 EC2 相关操作..."
+          # 例如: terraform apply -var-file=ec2.tfvars
+        elif [ "$MODULE" = "s3" ]; then
+          echo "执行 S3 相关操作..."
+          # 例如: terraform apply -var-file=s3.tfvars
+        else
+          echo "模块 '$MODULE' 已识别，但尚未实现相应操作"
+        fi
+        
+        echo "模块 '$MODULE' 处理完成✅"
